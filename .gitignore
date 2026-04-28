@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+idol_scout/screener/downloads/
+idol_scout/screener/reports/
+analysis_reports/
+*.wav
+*.mp4
+*.webm
+.DS_Store

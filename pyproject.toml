@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idol-scout"
+version = "1.0.0"
+description = "AI 아이돌 발굴 시스템 — 고유성 스크리닝 + 장기 추적"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "opencv-python>=4.8.0",
+    "mediapipe>=0.10.0",
+    "yt-dlp>=2024.1.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "black", "ruff"]
+
+[project.scripts]
+idol-screen = "idol_scout.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["idol_scout*"]
