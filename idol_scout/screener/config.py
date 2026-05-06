@@ -64,3 +64,25 @@ CONFIDENCE_CAPS = {
     "face_video": 0.6,        # 표정/비주얼 (해상도 의존)
     "face_video_hd": 0.75,    # 고해상도 얼굴 영상
 }
+
+# ── 보컬 세부 지표 (v2 — 보컬 해상도 극대화) ───────────
+VOCAL_SUB_INDICATORS = {
+    "tone_quadrant": "톤 사분면",           # 청량/따뜻/묵직/건조
+    "vocal_register": "성역대 구조",        # 흉성/두성/믹스 비율
+    "vibrato_character": "비브라토 특성",    # 속도, 깊이, 규칙성
+    "dynamic_range": "다이내믹 레인지",      # 성량 변화 폭
+    "vocal_attack": "어택 클린도",          # 발성 시작점 선명도
+    "breathiness": "호흡성(기식감)",         # 목소리의 공기 섞임 정도
+    "pitch_range": "음역대 폭",            # 추정 가용 음역대
+    "resonance_pattern": "공명 패턴",       # 포먼트 특성
+}
+
+# ── 톤 4사분면 정의 ──────────────────────────────────────
+# X축: 밝기(Spectral Centroid) — 낮으면 어둡고, 높으면 밝다
+# Y축: 무게(저주파 에너지 비율) — 낮으면 가볍고, 높으면 묵직하다
+TONE_QUADRANTS = {
+    "bright_light": {"ko": "청량", "desc": "밝고 가벼운 톤", "example": "솔라(마마무)"},
+    "warm_light": {"ko": "따뜻", "desc": "따뜻하고 부드러운 톤", "example": "휘인(마마무)"},
+    "dark_heavy": {"ko": "묵직", "desc": "어둡고 무게감 있는 톤", "example": "화사(마마무)"},
+    "bright_heavy": {"ko": "건조", "desc": "밝지만 거친/각진 톤", "example": "문별(마마무)"},
+}

@@ -42,6 +42,7 @@ class ScreeningResult:
     estimated_person_count: int = 1
     multi_person_method: str = ""
     multi_person_notes: str = ""
+    vocal_profile: Optional[dict] = None  # VocalProfile as dict for JSON serialization
 
     def to_dict(self) -> dict:
         d = {"url": self.url, "title": self.title, "uploader": self.uploader, "content_type": self.content_type,
@@ -52,7 +53,8 @@ class ScreeningResult:
             "multi_person_detected": self.multi_person_detected,
             "estimated_person_count": self.estimated_person_count,
             "multi_person_method": self.multi_person_method,
-            "multi_person_notes": self.multi_person_notes}
+            "multi_person_notes": self.multi_person_notes,
+            "vocal_profile": self.vocal_profile}
         for iid, ir in self.indicators.items():
             d["indicators"][str(iid)] = {"name": ir.name, "score": round(ir.score, 4), "confidence": round(ir.confidence, 4),
                 "effective_score": round(ir.effective_score, 4), "measured": ir.measured, "notes": ir.notes}
@@ -205,6 +207,34 @@ def _map_audio_to_indicators(result: ScreeningResult, audio: AudioAnalysisResult
                     f"일관성={r.consistency:.2f}, BPM={r.tempo:.0f}")
     if content_type == "vocal" and r.rhythm_confidence > 0:
         result.indicators[36].notes += " [보컬 영상 — 리듬 분석 보조적]"
+
+    # ── 보컬 프로파일 매핑 (v2) ──
+    if audio.vocal_profile.measured:
+        result.vocal_profile = {
+            "tone_quadrant": audio.vocal_profile.tone_quadrant,
+            "tone_quadrant_ko": audio.vocal_profile.tone_quadrant_ko,
+            "brightness": round(audio.vocal_profile.brightness, 3),
+            "weight": round(audio.vocal_profile.weight, 3),
+            "tone_confidence": round(audio.vocal_profile.tone_confidence, 3),
+            "chest_voice_ratio": round(audio.vocal_profile.chest_voice_ratio, 3),
+            "head_voice_ratio": round(audio.vocal_profile.head_voice_ratio, 3),
+            "mix_voice_ratio": round(audio.vocal_profile.mix_voice_ratio, 3),
+            "vibrato_rate_hz": round(audio.vocal_profile.vibrato_rate_hz, 2),
+            "vibrato_depth": round(audio.vocal_profile.vibrato_depth, 3),
+            "vibrato_regularity": round(audio.vocal_profile.vibrato_regularity, 3),
+            "vibrato_presence": round(audio.vocal_profile.vibrato_presence, 3),
+            "dynamic_range_db": round(audio.vocal_profile.dynamic_range_db, 2),
+            "dynamic_score": round(audio.vocal_profile.dynamic_score, 3),
+            "attack_sharpness": round(audio.vocal_profile.attack_sharpness, 3),
+            "breathiness": round(audio.vocal_profile.breathiness, 3),
+            "pitch_min_hz": round(audio.vocal_profile.pitch_min_hz, 1),
+            "pitch_max_hz": round(audio.vocal_profile.pitch_max_hz, 1),
+            "pitch_range_semitones": round(audio.vocal_profile.pitch_range_semitones, 2),
+            "formant_1_hz": round(audio.vocal_profile.formant_1_hz, 1),
+            "formant_2_hz": round(audio.vocal_profile.formant_2_hz, 1),
+            "resonance_type": audio.vocal_profile.resonance_type,
+            "notes": audio.vocal_profile.notes,
+        }
 
 def _invalidate_all_indicators(result: ScreeningResult, mp_info: MultiPersonInfo):
     """다인원 영상 감지 시 — 모든 지표를 무효화하고 경고 추가"""

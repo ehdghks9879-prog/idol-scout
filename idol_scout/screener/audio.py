@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 import librosa
 from .config import (AUDIO_SAMPLE_RATE, MFCC_N_COEFFS, MFCC_HOP_LENGTH, MFCC_N_FFT,
-    SEGMENT_DURATION, SEGMENT_HOP, CONFIDENCE_CAPS)
+    SEGMENT_DURATION, SEGMENT_HOP, CONFIDENCE_CAPS, TONE_QUADRANTS)
 
 # imageio-ffmpeg에서 ffmpeg 경로를 가져와서 PATH에 추가
 try:
@@ -51,10 +51,56 @@ class RhythmResult:
     notes: str = ""
 
 @dataclass
+class VocalProfile:
+    """보컬 세부 프로파일 — v2 보컬 해상도 극대화"""
+    # 톤 4사분면
+    tone_quadrant: str = "unknown"           # bright_light / warm_light / dark_heavy / bright_heavy
+    tone_quadrant_ko: str = "미분류"
+    brightness: float = 0.0                  # 0~1 (spectral centroid normalized)
+    weight: float = 0.0                      # 0~1 (low-freq energy ratio)
+    tone_confidence: float = 0.0
+
+    # 성역대 구조
+    chest_voice_ratio: float = 0.0           # 흉성 비율
+    head_voice_ratio: float = 0.0            # 두성 비율
+    mix_voice_ratio: float = 0.0             # 믹스 비율
+
+    # 비브라토 특성
+    vibrato_rate_hz: float = 0.0             # 비브라토 속도 (Hz)
+    vibrato_depth: float = 0.0               # 비브라토 깊이 (semitones)
+    vibrato_regularity: float = 0.0          # 비브라토 규칙성 0~1
+    vibrato_presence: float = 0.0            # 비브라토 존재 비율
+
+    # 다이내믹 레인지
+    dynamic_range_db: float = 0.0            # dB 범위
+    dynamic_score: float = 0.0               # 정규화 점수
+
+    # 어택 클린도
+    attack_sharpness: float = 0.0            # onset 선명도 0~1
+
+    # 호흡성(기식감)
+    breathiness: float = 0.0                 # 기식 정도 0~1 (HNR 기반)
+
+    # 음역대 폭
+    pitch_min_hz: float = 0.0
+    pitch_max_hz: float = 0.0
+    pitch_range_semitones: float = 0.0
+
+    # 공명 패턴
+    formant_1_hz: float = 0.0               # 제1포먼트
+    formant_2_hz: float = 0.0               # 제2포먼트
+    resonance_type: str = "unknown"          # chest_dominant / nasal / head_dominant / mixed
+
+    # 측정 상태
+    measured: bool = False
+    notes: str = ""
+
+@dataclass
 class AudioAnalysisResult:
     """오디오 분석 통합 결과"""
     timbre: TimbreResult = field(default_factory=TimbreResult)
     rhythm: RhythmResult = field(default_factory=RhythmResult)
+    vocal_profile: VocalProfile = field(default_factory=VocalProfile)
     duration: float = 0.0
     sample_rate: int = AUDIO_SAMPLE_RATE
     has_vocals: bool = False
@@ -122,6 +168,9 @@ def analyze_audio(audio_path: Path, content_type: str = "vocal_video") -> AudioA
     conf_cap = CONFIDENCE_CAPS.get(content_type, 0.6)
     result.timbre = _analyze_timbre(y, sr, conf_cap)
     result.rhythm = _analyze_rhythm(y, sr, conf_cap, content_type)
+    # v2: 보컬 세부 프로파일 분석
+    if result.has_vocals:
+        result.vocal_profile = _analyze_vocal_profile(y, sr, conf_cap)
     return result
 
 def _analyze_timbre(y: np.ndarray, sr: int, conf_cap: float) -> TimbreResult:
@@ -212,6 +261,316 @@ def _analyze_rhythm(y: np.ndarray, sr: int, conf_cap: float, content_type: str) 
     else:
         rr.rhythm_confidence = conf_cap * 0.6
     return rr
+
+def _analyze_vocal_profile(y: np.ndarray, sr: int, conf_cap: float) -> VocalProfile:
+    """보컬 세부 프로파일 분석 (v2 보컬 해상도 극대화)"""
+    vp = VocalProfile()
+    try:
+        # 1. 톤 4사분면 (Tone Quadrant) 분석
+        try:
+            vp.brightness, vp.weight = _analyze_tone_quadrant(y, sr)
+            vp.tone_quadrant, vp.tone_quadrant_ko = _classify_tone_quadrant(vp.brightness, vp.weight)
+            vp.tone_confidence = conf_cap * 0.65
+        except Exception as e:
+            vp.notes += f"톤 분석 실패: {str(e)[:30]}. "
+
+        # 2. 성역대 구조 (Vocal Register) 분석
+        try:
+            vp.chest_voice_ratio, vp.head_voice_ratio, vp.mix_voice_ratio = _analyze_vocal_register(y, sr)
+        except Exception as e:
+            vp.notes += f"성역대 분석 실패: {str(e)[:30]}. "
+
+        # 3. 비브라토 특성 (Vibrato Character) 분석
+        try:
+            vp.vibrato_rate_hz, vp.vibrato_depth, vp.vibrato_regularity, vp.vibrato_presence = _analyze_vibrato(y, sr)
+        except Exception as e:
+            vp.notes += f"비브라토 분석 실패: {str(e)[:30]}. "
+
+        # 4. 다이내믹 레인지 (Dynamic Range) 분석
+        try:
+            vp.dynamic_range_db, vp.dynamic_score = _analyze_dynamic_range(y, sr)
+        except Exception as e:
+            vp.notes += f"다이내믹 분석 실패: {str(e)[:30]}. "
+
+        # 5. 어택 클린도 (Vocal Attack) 분석
+        try:
+            vp.attack_sharpness = _analyze_attack_sharpness(y, sr)
+        except Exception as e:
+            vp.notes += f"어택 분석 실패: {str(e)[:30]}. "
+
+        # 6. 호흡성 (Breathiness) 분석
+        try:
+            vp.breathiness = _analyze_breathiness(y, sr)
+        except Exception as e:
+            vp.notes += f"호흡성 분석 실패: {str(e)[:30]}. "
+
+        # 7. 음역대 폭 (Pitch Range) 분석
+        try:
+            vp.pitch_min_hz, vp.pitch_max_hz, vp.pitch_range_semitones = _analyze_pitch_range(y, sr)
+        except Exception as e:
+            vp.notes += f"음역대 분석 실패: {str(e)[:30]}. "
+
+        # 8. 공명 패턴 (Resonance/Formants) 분석
+        try:
+            vp.formant_1_hz, vp.formant_2_hz, vp.resonance_type = _analyze_resonance(y, sr)
+        except Exception as e:
+            vp.notes += f"공명 분석 실패: {str(e)[:30]}. "
+
+        vp.measured = True
+        vp.notes += "(v2 보컬 해상도 극대화)"
+    except Exception as e:
+        vp.notes = f"보컬 프로파일 분석 실패: {str(e)[:50]}"
+
+    return vp
+
+def _analyze_tone_quadrant(y: np.ndarray, sr: int) -> Tuple[float, float]:
+    """
+    톤 4사분면 분석
+    brightness: 0~1 (spectral centroid 정규화)
+    weight: 0~1 (저주파 에너지 비율)
+    """
+    # HPSS로 하모닉 성분만 추출
+    y_harmonic, _ = librosa.effects.hpss(y)
+
+    # Spectral Centroid — 밝기 측정
+    spectral_centroid = librosa.feature.spectral_centroid(y=y_harmonic, sr=sr)[0]
+    mean_centroid = float(np.mean(spectral_centroid))
+
+    # 정규화: 음성 대역 500~4000Hz를 0~1로 매핑
+    brightness = _normalize(mean_centroid, 500.0, 4000.0)
+
+    # 저주파 에너지 비율 — 무게감
+    S = np.abs(librosa.stft(y_harmonic))
+    freqs = librosa.fft_frequencies(sr=sr)
+    low_freq_mask = freqs <= 500
+    high_freq_energy = np.sum(S[~low_freq_mask] ** 2) + 1e-10
+    low_freq_energy = np.sum(S[low_freq_mask] ** 2) + 1e-10
+    weight = low_freq_energy / (low_freq_energy + high_freq_energy)
+
+    return float(brightness), float(weight)
+
+def _classify_tone_quadrant(brightness: float, weight: float) -> Tuple[str, str]:
+    """톤 4사분면 분류"""
+    if brightness > 0.5 and weight < 0.5:
+        return "bright_light", "청량"
+    elif brightness <= 0.5 and weight < 0.5:
+        return "warm_light", "따뜻"
+    elif brightness <= 0.5 and weight >= 0.5:
+        return "dark_heavy", "묵직"
+    else:  # brightness > 0.5 and weight >= 0.5
+        return "bright_heavy", "건조"
+
+def _analyze_vocal_register(y: np.ndarray, sr: int) -> Tuple[float, float, float]:
+    """
+    성역대 구조 분석
+    chest_voice_ratio, head_voice_ratio, mix_voice_ratio
+    """
+    try:
+        spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+        chest_frames = np.sum(spectral_centroid < 800)
+        mix_frames = np.sum((spectral_centroid >= 800) & (spectral_centroid <= 2500))
+        head_frames = np.sum(spectral_centroid > 2500)
+        total = len(spectral_centroid)
+
+        chest_ratio = float(chest_frames / total) if total > 0 else 0.0
+        mix_ratio = float(mix_frames / total) if total > 0 else 0.0
+        head_ratio = float(head_frames / total) if total > 0 else 0.0
+
+        return chest_ratio, head_ratio, mix_ratio
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+def _analyze_vibrato(y: np.ndarray, sr: int) -> Tuple[float, float, float, float]:
+    """
+    비브라토 특성 분석
+    vibrato_rate_hz, vibrato_depth, vibrato_regularity, vibrato_presence
+    """
+    try:
+        # Pitch tracking with librosa.pyin
+        f0, voiced_flag, voiced_probs = librosa.pyin(y, fmin=50, fmax=400, sr=sr)
+
+        # 유성음 부분만 추출
+        voiced_f0 = f0[voiced_flag]
+        if len(voiced_f0) < 20:
+            return 0.0, 0.0, 0.0, 0.0
+
+        # 비브라토는 f0 변조를 따라감
+        # 간단한 자기상관을 통해 주기성 감지
+        hop_length = 512
+        time_step = hop_length / sr
+        f0_hz = voiced_f0
+
+        # 변화도 계산 (1차 미분)
+        f0_diff = np.abs(np.diff(f0_hz))
+        if len(f0_diff) < 10:
+            return 0.0, 0.0, 0.0, 0.0
+
+        # 자기상관으로 주기성 감지
+        acf = np.correlate(f0_diff - np.mean(f0_diff), f0_diff - np.mean(f0_diff), mode='full')
+        acf = acf[len(acf)//2:]
+        acf = acf / (np.max(acf) + 1e-10)
+
+        # 비브라토 대역: 3~10 프레임 (typical 4~7Hz)
+        vibrato_presence = 0.0
+        vibrato_rate_hz = 0.0
+        vibrato_depth = 0.0
+        vibrato_regularity = 0.0
+
+        if len(acf) > 15:
+            vibrato_band = acf[3:15]
+            if np.max(vibrato_band) > 0.3:
+                vibrato_idx = np.argmax(vibrato_band) + 3
+                vibrato_rate_hz = float(sr / (hop_length * vibrato_idx))
+                vibrato_presence = float(np.max(vibrato_band))
+                vibrato_depth = float(np.std(f0_diff) / np.mean(f0_hz) * 12)  # semitones
+                vibrato_regularity = float(np.max(vibrato_band))
+
+        return vibrato_rate_hz, vibrato_depth, vibrato_regularity, vibrato_presence
+    except Exception:
+        return 0.0, 0.0, 0.0, 0.0
+
+def _analyze_dynamic_range(y: np.ndarray, sr: int) -> Tuple[float, float]:
+    """
+    다이내믹 레인지 분석
+    dynamic_range_db, dynamic_score (0~1 정규화)
+    """
+    try:
+        # RMS 에너지 frame-by-frame
+        frame_length = 2048
+        hop_length = 512
+        rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
+
+        # 침묵 제거 (threshold: mean RMS * 0.1)
+        threshold = np.mean(rms) * 0.1
+        rms_active = rms[rms > threshold]
+
+        if len(rms_active) < 2:
+            return 0.0, 0.0
+
+        # dB 변환
+        rms_db = 20 * np.log10(rms_active + 1e-10)
+        dynamic_range = float(np.max(rms_db) - np.min(rms_db))
+
+        # 정규화: 12dB ~ 48dB를 0~1로
+        dynamic_score = _normalize(dynamic_range, 12.0, 48.0)
+
+        return dynamic_range, dynamic_score
+    except Exception:
+        return 0.0, 0.0
+
+def _analyze_attack_sharpness(y: np.ndarray, sr: int) -> float:
+    """
+    어택 클린도 분석 (onset strength)
+    0~1 스케일
+    """
+    try:
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        attack_sharpness = float(np.mean(onset_env))
+        # 정규화
+        attack_sharpness = _normalize(attack_sharpness, 0.0, 0.1)
+        return attack_sharpness
+    except Exception:
+        return 0.0
+
+def _analyze_breathiness(y: np.ndarray, sr: int) -> float:
+    """
+    호흡성(기식감) 분석 (spectral flatness 기반)
+    높은 flatness = 더 많은 기식
+    0~1 스케일
+    """
+    try:
+        y_harmonic, _ = librosa.effects.hpss(y)
+        spectral_flatness = librosa.feature.spectral_flatness(y=y_harmonic)[0]
+        mean_flatness = float(np.mean(spectral_flatness))
+
+        # 정규화: 0.01~0.3을 0~1로
+        breathiness = _normalize(mean_flatness, 0.01, 0.3)
+        return breathiness
+    except Exception:
+        return 0.0
+
+def _analyze_pitch_range(y: np.ndarray, sr: int) -> Tuple[float, float, float]:
+    """
+    음역대 폭 분석 (pitch range)
+    pitch_min_hz, pitch_max_hz, pitch_range_semitones
+    """
+    try:
+        # Pitch tracking with librosa.pyin
+        f0, voiced_flag, _ = librosa.pyin(y, fmin=50, fmax=400, sr=sr)
+        voiced_f0 = f0[voiced_flag]
+
+        if len(voiced_f0) < 10:
+            return 0.0, 0.0, 0.0
+
+        pitch_min = float(np.min(voiced_f0))
+        pitch_max = float(np.max(voiced_f0))
+
+        # semitones = 12 * log2(f_max / f_min)
+        if pitch_min > 0:
+            pitch_range_semitones = float(12 * np.log2(pitch_max / pitch_min))
+        else:
+            pitch_range_semitones = 0.0
+
+        return pitch_min, pitch_max, pitch_range_semitones
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+def _analyze_resonance(y: np.ndarray, sr: int) -> Tuple[float, float, str]:
+    """
+    공명 패턴 분석 (포먼트 특성)
+    formant_1_hz, formant_2_hz, resonance_type
+    """
+    try:
+        y_harmonic, _ = librosa.effects.hpss(y)
+
+        # LPC를 이용한 포먼트 추정 (간단한 구현)
+        # windowed frame에서 분석
+        frame_length = 2048
+        hop_length = 512
+
+        formants_list = []
+        for start in range(0, len(y_harmonic) - frame_length, hop_length):
+            frame = y_harmonic[start:start + frame_length]
+            if np.sum(np.abs(frame)) < 1e-6:
+                continue
+
+            try:
+                # LPC coefficients (order 12)
+                a = librosa.lpc(frame, order=12)
+                # roots of LPC polynomial
+                roots = np.roots(a)
+                roots = roots[np.imag(roots) >= 0]
+
+                if len(roots) > 0:
+                    angles = np.angle(roots)
+                    freqs = angles * sr / (2 * np.pi)
+                    freqs = freqs[freqs > 0]
+                    if len(freqs) >= 2:
+                        formants_list.append(sorted(freqs)[:2])
+            except Exception:
+                continue
+
+        if not formants_list:
+            return 0.0, 0.0, "unknown"
+
+        # 평균 포먼트
+        formants_array = np.array(formants_list)
+        formant_1 = float(np.mean(formants_array[:, 0]))
+        formant_2 = float(np.mean(formants_array[:, 1]) if formants_array.shape[1] > 1 else 0.0)
+
+        # 공명 타입 분류 (간단한 휴리스틱)
+        if formant_1 < 600:
+            resonance_type = "chest_dominant"
+        elif formant_1 < 800:
+            resonance_type = "nasal"
+        elif formant_1 < 1000:
+            resonance_type = "mixed"
+        else:
+            resonance_type = "head_dominant"
+
+        return formant_1, formant_2, resonance_type
+    except Exception:
+        return 0.0, 0.0, "unknown"
 
 def _compute_onset_beat_offsets(onset_times: np.ndarray, beat_times: np.ndarray) -> np.ndarray:
     offsets = []

@@ -383,6 +383,11 @@ def _build_report(sr, profile, url, ct, name, name_en, group, agency):
             "rncs_detail": {"프로필 분산": fd.rncs.cond1_dispersed_profile, "수렴 엔진 부재": fd.rncs.cond2_convergence_engine,
                             "시스템 공급 부족": fd.rncs.cond3_system_supply, "비음악적 주목": fd.rncs.cond4_non_musical_attention,
                             "윈도우 초과": fd.rncs.cond5_window_missed} if fd.rncs else {}}
+
+    # ── 보컬 프로파일 (v2) ──
+    if sr.vocal_profile:
+        report["vocal_profile"] = sr.vocal_profile
+
     return report
 
 
@@ -415,6 +420,192 @@ def render_radar(indicators):
         showlegend=False, margin=dict(l=50,r=50,t=30,b=30), height=320,
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     return fig
+
+
+# ── 톤 4사분면 차트 ──
+TONE_QUADRANT_INFO = {
+    "bright_light": {"ko": "청량", "color": "#74b9ff", "example": "솔라", "x": 0.75, "y": 0.25},
+    "warm_light":   {"ko": "따뜻", "color": "#fdcb6e", "example": "휘인", "x": 0.25, "y": 0.25},
+    "dark_heavy":   {"ko": "묵직", "color": "#e17055", "example": "화사", "x": 0.25, "y": 0.75},
+    "bright_heavy": {"ko": "건조", "color": "#a29bfe", "example": "문별", "x": 0.75, "y": 0.75},
+}
+
+def render_tone_quadrant(vp):
+    """톤 4사분면 Plotly 차트"""
+    brightness = vp.get("brightness", 0.5)
+    weight = vp.get("weight", 0.5)
+    quadrant = vp.get("tone_quadrant", "unknown")
+    quadrant_ko = vp.get("tone_quadrant_ko", "미분류")
+
+    fig = go.Figure()
+
+    # 4사분면 배경 영역
+    for qkey, qinfo in TONE_QUADRANT_INFO.items():
+        opacity = 0.25 if qkey == quadrant else 0.08
+        fig.add_shape(type="rect",
+            x0=qinfo["x"]-0.25, y0=qinfo["y"]-0.25, x1=qinfo["x"]+0.25, y1=qinfo["y"]+0.25,
+            fillcolor=qinfo["color"], opacity=opacity, line=dict(width=0))
+        # 사분면 라벨
+        fig.add_annotation(x=qinfo["x"], y=qinfo["y"],
+            text=f"<b>{qinfo['ko']}</b><br><span style='font-size:10px'>{qinfo['example']}</span>",
+            showarrow=False, font=dict(size=13, color=qinfo["color"]),
+            opacity=0.7 if qkey != quadrant else 1.0)
+
+    # 분석 대상 점
+    point_color = TONE_QUADRANT_INFO.get(quadrant, {}).get("color", "#fff")
+    fig.add_trace(go.Scatter(
+        x=[brightness], y=[weight], mode="markers+text",
+        marker=dict(size=18, color=point_color, line=dict(width=2, color="#fff"),
+                    symbol="diamond"),
+        text=[f" {quadrant_ko}"], textposition="top right",
+        textfont=dict(size=13, color=point_color, family="Noto Sans KR"),
+        showlegend=False))
+
+    # 축선
+    fig.add_hline(y=0.5, line=dict(color="#444", width=1, dash="dot"))
+    fig.add_vline(x=0.5, line=dict(color="#444", width=1, dash="dot"))
+
+    fig.update_layout(
+        xaxis=dict(range=[0, 1], title="← 어두운 ─── 밝기 ─── 밝은 →",
+                   titlefont=dict(size=11, color="#888"), showgrid=False,
+                   tickvals=[0, 0.5, 1], ticktext=["어둡", "", "밝음"],
+                   tickfont=dict(size=10, color="#666")),
+        yaxis=dict(range=[0, 1], title="← 가벼운 ─── 무게 ─── 묵직 →",
+                   titlefont=dict(size=11, color="#888"), showgrid=False,
+                   tickvals=[0, 0.5, 1], ticktext=["가벼운", "", "묵직"],
+                   tickfont=dict(size=10, color="#666")),
+        height=340, margin=dict(l=50, r=30, t=20, b=50),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+
+def render_vocal_sub_cards(vp):
+    """보컬 세부 지표 카드 렌더링"""
+    cards_html = []
+
+    # 1. 비브라토 특성
+    vib_rate = vp.get("vibrato_rate_hz", 0)
+    vib_depth = vp.get("vibrato_depth", 0)
+    vib_reg = vp.get("vibrato_regularity", 0)
+    vib_pres = vp.get("vibrato_presence", 0)
+    if vib_rate > 0:
+        vib_desc = "느리고 깊은 비브라토" if vib_rate < 5 else "빠르고 가벼운 비브라토" if vib_rate > 6 else "보통 속도"
+        if vib_depth > 0.5: vib_desc += " · 폭이 큼"
+        cards_html.append(f"""<div class="card" style="padding:1rem 1.2rem; border-left:3px solid #a29bfe;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; color:#eee;">🎼 비브라토 특성</span>
+                <span style="color:#a29bfe; font-size:0.85rem;">존재 비율 {vib_pres:.0%}</span>
+            </div>
+            <div class="detail-text" style="margin-top:0.4rem;">
+                속도 <b style="color:#ddd;">{vib_rate:.1f}Hz</b> · 깊이 <b style="color:#ddd;">{vib_depth:.2f}st</b> · 규칙성 <b style="color:#ddd;">{vib_reg:.0%}</b>
+            </div>
+            <div class="explain">→ {vib_desc}</div>
+        </div>""")
+
+    # 2. 다이내믹 레인지
+    dyn_db = vp.get("dynamic_range_db", 0)
+    dyn_score = vp.get("dynamic_score", 0)
+    if dyn_db > 0:
+        dyn_color = "#00b894" if dyn_score >= 0.6 else "#fdcb6e" if dyn_score >= 0.3 else "#e17055"
+        dyn_desc = "넓은 성량 변화 — 표현력 강함" if dyn_score >= 0.6 else "보통 수준의 성량 변화" if dyn_score >= 0.3 else "성량 변화 적음"
+        cards_html.append(f"""<div class="card" style="padding:1rem 1.2rem; border-left:3px solid {dyn_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; color:#eee;">📢 다이내믹 레인지</span>
+                <span style="color:{dyn_color}; font-weight:600;">{dyn_db:.1f} dB</span>
+            </div>
+            {_bar_html(dyn_score, dyn_color, 100)}
+            <div class="explain">→ {dyn_desc}</div>
+        </div>""")
+
+    # 3. 호흡성(기식감)
+    breath = vp.get("breathiness", 0)
+    if breath > 0:
+        br_color = "#74b9ff" if breath >= 0.5 else "#636e72"
+        br_desc = "바람 섞인 음색 — 감성적·몽환적 질감" if breath >= 0.5 else "깨끗한 발성 — 선명한 음색"
+        cards_html.append(f"""<div class="card" style="padding:1rem 1.2rem; border-left:3px solid {br_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; color:#eee;">💨 호흡성 (기식감)</span>
+                <span style="color:{br_color}; font-weight:600;">{breath:.2f}</span>
+            </div>
+            {_bar_html(breath, br_color, 100)}
+            <div class="explain">→ {br_desc}</div>
+        </div>""")
+
+    # 4. 어택 클린도
+    attack = vp.get("attack_sharpness", 0)
+    if attack > 0:
+        atk_color = "#00b894" if attack >= 0.6 else "#fdcb6e"
+        atk_desc = "발성 시작이 선명 — 절도 있는 보컬" if attack >= 0.6 else "부드럽게 시작하는 발성"
+        cards_html.append(f"""<div class="card" style="padding:1rem 1.2rem; border-left:3px solid {atk_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; color:#eee;">⚡ 어택 클린도</span>
+                <span style="color:{atk_color}; font-weight:600;">{attack:.2f}</span>
+            </div>
+            {_bar_html(attack, atk_color, 100)}
+            <div class="explain">→ {atk_desc}</div>
+        </div>""")
+
+    # 5. 음역대 폭
+    pitch_min = vp.get("pitch_min_hz", 0)
+    pitch_max = vp.get("pitch_max_hz", 0)
+    pitch_range = vp.get("pitch_range_semitones", 0)
+    if pitch_range > 0:
+        pr_color = "#00b894" if pitch_range >= 24 else "#fdcb6e" if pitch_range >= 12 else "#e17055"
+        pr_desc = f"약 {pitch_range:.0f}반음 ({pitch_min:.0f}Hz ~ {pitch_max:.0f}Hz)"
+        if pitch_range >= 24: pr_desc += " — 2옥타브 이상, 넓은 음역"
+        elif pitch_range >= 12: pr_desc += " — 1옥타브 이상"
+        cards_html.append(f"""<div class="card" style="padding:1rem 1.2rem; border-left:3px solid {pr_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; color:#eee;">🎹 음역대 폭</span>
+                <span style="color:{pr_color}; font-weight:600;">{pitch_range:.0f} 반음</span>
+            </div>
+            {_bar_html(min(pitch_range/36, 1.0), pr_color, 100)}
+            <div class="explain">→ {pr_desc}</div>
+        </div>""")
+
+    # 6. 성역대 구조 (흉성/믹스/두성)
+    chest = vp.get("chest_voice_ratio", 0)
+    head = vp.get("head_voice_ratio", 0)
+    mix = vp.get("mix_voice_ratio", 0)
+    if chest + head + mix > 0:
+        cards_html.append(f"""<div class="card" style="padding:1rem 1.2rem; border-left:3px solid #fd79a8;">
+            <div style="font-weight:600; color:#eee; margin-bottom:0.5rem;">🫁 성역대 구조</div>
+            <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:0.3rem;">
+                <span style="color:#e17055; font-size:0.85rem; width:50px;">흉성</span>
+                <div style="flex:1;">{_bar_html(chest, '#e17055', 100)}</div>
+                <span style="color:#aaa; font-size:0.85rem; width:40px; text-align:right;">{chest:.0%}</span>
+            </div>
+            <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:0.3rem;">
+                <span style="color:#fdcb6e; font-size:0.85rem; width:50px;">믹스</span>
+                <div style="flex:1;">{_bar_html(mix, '#fdcb6e', 100)}</div>
+                <span style="color:#aaa; font-size:0.85rem; width:40px; text-align:right;">{mix:.0%}</span>
+            </div>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+                <span style="color:#74b9ff; font-size:0.85rem; width:50px;">두성</span>
+                <div style="flex:1;">{_bar_html(head, '#74b9ff', 100)}</div>
+                <span style="color:#aaa; font-size:0.85rem; width:40px; text-align:right;">{head:.0%}</span>
+            </div>
+        </div>""")
+
+    # 7. 공명 패턴
+    f1 = vp.get("formant_1_hz", 0)
+    f2 = vp.get("formant_2_hz", 0)
+    res_type = vp.get("resonance_type", "unknown")
+    res_kr = {"chest_dominant": "가슴 공명 중심", "nasal": "비강 공명 중심",
+              "head_dominant": "두성 공명 중심", "mixed": "복합 공명"}.get(res_type, "미분류")
+    if f1 > 0:
+        cards_html.append(f"""<div class="card" style="padding:1rem 1.2rem; border-left:3px solid #00b894;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; color:#eee;">🔊 공명 패턴</span>
+                <span style="color:#00b894; font-size:0.85rem;">{res_kr}</span>
+            </div>
+            <div class="detail-text" style="margin-top:0.4rem;">
+                F1: <b style="color:#ddd;">{f1:.0f}Hz</b> · F2: <b style="color:#ddd;">{f2:.0f}Hz</b>
+            </div>
+            <div class="explain">→ 포먼트 구조로 추정한 공명 패턴</div>
+        </div>""")
+
+    return "\n".join(cards_html)
 
 
 def render_dashboard(report):
@@ -590,6 +781,52 @@ def render_dashboard(report):
                 st.markdown("")
 
     st.markdown("")
+
+    # ── ★ 보컬 프로파일 (v2) ──
+    vp = report.get("vocal_profile")
+    if vp and vp.get("tone_quadrant", "unknown") != "unknown":
+        st.markdown('<div class="section-title">🎤 보컬 프로파일 — 톤 4사분면 분류</div>', unsafe_allow_html=True)
+        st.markdown("""<div class="detail-text" style="margin-bottom:0.8rem;">
+            마마무 4인의 톤 구조를 기준으로, 이 사람의 목소리가 어떤 유형에 해당하는지 자동 분류합니다.
+            그룹 조합 시 서로 다른 사분면의 보컬이 모여야 전 주파수 대역을 균형 있게 채울 수 있습니다.
+        </div>""", unsafe_allow_html=True)
+
+        col_chart, col_info = st.columns([1.2, 1])
+        with col_chart:
+            fig = render_tone_quadrant(vp)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        with col_info:
+            tq = vp.get("tone_quadrant", "unknown")
+            tq_ko = vp.get("tone_quadrant_ko", "미분류")
+            tq_info = TONE_QUADRANT_INFO.get(tq, {})
+            tq_color = tq_info.get("color", "#888")
+            tq_example = tq_info.get("example", "")
+            confidence = vp.get("tone_confidence", 0)
+            st.markdown(f"""<div class="card" style="border:1px solid {tq_color}; text-align:center; padding:1.5rem;">
+                <div style="font-size:0.85rem; color:#888; margin-bottom:0.5rem;">이 사람의 톤 유형</div>
+                <div style="font-size:2.2rem; font-weight:700; color:{tq_color};">{tq_ko}</div>
+                <div style="font-size:0.9rem; color:#aaa; margin-top:0.3rem;">유사 레퍼런스: {tq_example}</div>
+                <div style="margin-top:0.8rem;">
+                    <span style="font-size:0.8rem; color:#666;">밝기 {vp.get('brightness',0):.2f}</span>
+                    <span style="margin:0 0.5rem; color:#444;">|</span>
+                    <span style="font-size:0.8rem; color:#666;">무게 {vp.get('weight',0):.2f}</span>
+                </div>
+                <div style="margin-top:0.5rem; font-size:0.78rem; color:#555;">분류 신뢰도: {confidence:.0%}</div>
+            </div>""", unsafe_allow_html=True)
+
+        # 보컬 세부 지표 카드
+        st.markdown('<div class="section-title">🔬 보컬 세부 지표</div>', unsafe_allow_html=True)
+        st.markdown("""<div class="detail-text" style="margin-bottom:0.8rem;">
+            음색의 세부 특성을 8가지 하위 지표로 분해합니다. 각 지표는 독립적으로 평가되며, 종합 점수로 합산하지 않습니다.
+        </div>""", unsafe_allow_html=True)
+
+        sub_cards_html = render_vocal_sub_cards(vp)
+        if sub_cards_html:
+            st.markdown(sub_cards_html, unsafe_allow_html=True)
+        else:
+            st.caption("보컬 세부 지표 데이터가 없습니다.")
+
+        st.markdown("")
 
     # ── 100차원 중 얼마나 봤는가 ──
     st.markdown('<div class="section-title">📐 전체 100개 항목 중 얼마나 측정했나?</div>', unsafe_allow_html=True)
@@ -770,12 +1007,12 @@ def _render_main_page():
     <div class="paradigm-box" style="text-align:center; padding:1.5rem;">
         <div style="font-size:1.05rem; color:#ddd; margin-bottom:0.8rem; line-height:1.8;">
             이 시스템은 <span style="color:#e17055; font-weight:600;">종합 점수로 줄 세우지 않습니다.</span><br>
-            대신 <span style="color:#a29bfe; font-weight:600;">"이 사람에게 남들과 확 다른 점이 하나라도 있는가?"</span>를 봅니다.
+            <span style="color:#a29bfe; font-weight:600;">"이 목소리에 남들과 확 다른 점이 있는가?"</span>를 봅니다.
         </div>
         <div class="detail-text" style="max-width:600px; margin:0 auto; text-align:left;">
-            권지용은 노래·춤 기술이 최고가 아니었지만 <b style="color:#ddd;">스타일이 극단적으로 독특</b>했고,
-            화사는 미인 대회에서 우승할 외모는 아니었지만 <b style="color:#ddd;">카리스마가 극단적</b>이었습니다.
-            "모든 걸 잘하는 사람"이 아니라 <b style="color:#ddd;">"하나가 압도적인 사람"</b>이 스타가 됩니다.
+            마마무가 K-POP 보컬 최강인 이유는 4명의 <b style="color:#ddd;">톤이 서로 다른 사분면</b>을 채우기 때문입니다.
+            화사의 묵직함, 솔라의 청량함, 휘인의 따뜻함, 문별의 건조함 — 이 조합이 만드는 시너지가 핵심입니다.
+            이 시스템은 <b style="color:#ddd;">보컬 톤의 독특성</b>을 과학적으로 측정하고, 최적의 그룹 조합을 찾습니다.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -817,18 +1054,19 @@ def _render_main_page():
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown("""<div class="card" style="border-top:3px solid #74b9ff;">
-            <div class="card-title" style="color:#74b9ff;">목소리 분석</div>
+            <div class="card-title" style="color:#74b9ff;">🎤 보컬 톤 분석 (핵심)</div>
             <div class="detail-text">
                 <b style="color:#ddd;">음색이 얼마나 독특한가?</b><br>
-                목소리의 음색 지문(MFCC)을 분석합니다.
-                한 번 들으면 잊히지 않는 목소리인지,
-                어떤 노래를 부르든 이 사람인 걸 알아듣는지를 봅니다.<br><br>
+                목소리의 음색 지문(MFCC)을 분석하고,
+                톤 4사분면(청량/따뜻/묵직/건조)으로 자동 분류합니다.
+                비브라토, 호흡성, 공명 패턴, 음역대 등
+                8가지 하위 지표를 세밀하게 측정합니다.<br><br>
                 ✅ 현재 자동 측정 가능
             </div>
         </div>""", unsafe_allow_html=True)
     with c2:
         st.markdown("""<div class="card" style="border-top:3px solid #fd79a8;">
-            <div class="card-title" style="color:#fd79a8;">리듬 분석</div>
+            <div class="card-title" style="color:#fd79a8;">🥁 리듬 분석</div>
             <div class="detail-text">
                 <b style="color:#ddd;">비트를 타는 방식이 고유한가?</b><br>
                 비트보다 살짝 앞서가는지, 뒤에 여유있게 실리는지,
@@ -839,7 +1077,7 @@ def _render_main_page():
         </div>""", unsafe_allow_html=True)
     with c3:
         st.markdown("""<div class="card" style="border-top:3px solid #fdcb6e;">
-            <div class="card-title" style="color:#fdcb6e;">외모·동작·표정</div>
+            <div class="card-title" style="color:#fdcb6e;">👤 외모·동작·표정</div>
             <div class="detail-text">
                 <b style="color:#ddd;">얼굴, 춤, 표정이 독특한가?</b><br>
                 카메라 앞에서의 존재감, 동작의 고유성,
