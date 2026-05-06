@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import json, sys, os
 from pathlib import Path
 from datetime import datetime
+from itertools import combinations
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -1115,6 +1116,323 @@ def _render_main_page():
 
 
 # ══════════════════════════════════════
+# 톤 조합 시뮬레이션
+# ══════════════════════════════════════
+
+def _get_vocal_reports():
+    """보컬 프로파일이 있는 리포트만 필터링"""
+    reports = load_reports()
+    vocal_reports = []
+    for r in reports:
+        vp = r.get("vocal_profile")
+        if vp and vp.get("tone_quadrant", "unknown") != "unknown":
+            vocal_reports.append(r)
+    return vocal_reports
+
+
+def _calc_quadrant_coverage(members_vp):
+    """4사분면 커버리지 계산 — 몇 개 사분면을 채우는가"""
+    quadrants_hit = set()
+    for vp in members_vp:
+        quadrants_hit.add(vp.get("tone_quadrant", "unknown"))
+    quadrants_hit.discard("unknown")
+    return quadrants_hit
+
+
+def _calc_tone_spread(members_vp):
+    """톤 분산도 — 4명이 2D 공간에서 얼마나 넓게 퍼져 있는가 (0~1)"""
+    if len(members_vp) < 2:
+        return 0.0
+    points = [(vp.get("brightness", 0.5), vp.get("weight", 0.5)) for vp in members_vp]
+    # 모든 쌍 간의 유클리드 거리 평균
+    dists = []
+    for i in range(len(points)):
+        for j in range(i+1, len(points)):
+            d = ((points[i][0] - points[j][0])**2 + (points[i][1] - points[j][1])**2) ** 0.5
+            dists.append(d)
+    # 최대 거리는 대각선 √2 ≈ 1.414
+    avg_dist = sum(dists) / len(dists) if dists else 0
+    return min(avg_dist / 0.7, 1.0)  # 0.7 이상이면 매우 넓게 퍼진 것
+
+
+def _calc_combination_score_components(members_vp):
+    """조합 평가 — 종합 점수 없이 각 차원 독립 표시"""
+    quadrants = _calc_quadrant_coverage(members_vp)
+    spread = _calc_tone_spread(members_vp)
+    # 각 사분면에 몇 명이 있는지
+    q_counts = {}
+    for vp in members_vp:
+        q = vp.get("tone_quadrant", "unknown")
+        q_counts[q] = q_counts.get(q, 0) + 1
+    # 중복 사분면 수 (같은 사분면에 2명 이상)
+    overlap_count = sum(1 for c in q_counts.values() if c > 1)
+    return {
+        "quadrants_covered": len(quadrants),
+        "quadrants_list": quadrants,
+        "spread": spread,
+        "overlap_count": overlap_count,
+        "quadrant_distribution": q_counts,
+    }
+
+
+def render_combination_chart(members_data):
+    """4명의 톤 위치를 하나의 4사분면 차트에 표시"""
+    fig = go.Figure()
+
+    # 4사분면 배경
+    for qkey, qinfo in TONE_QUADRANT_INFO.items():
+        fig.add_shape(type="rect",
+            x0=qinfo["x"]-0.25, y0=qinfo["y"]-0.25, x1=qinfo["x"]+0.25, y1=qinfo["y"]+0.25,
+            fillcolor=qinfo["color"], opacity=0.08, line=dict(width=0))
+        fig.add_annotation(x=qinfo["x"], y=qinfo["y"],
+            text=f"<b>{qinfo['ko']}</b><br><span style='font-size:10px'>{qinfo['example']}</span>",
+            showarrow=False, font=dict(size=12, color=qinfo["color"]), opacity=0.5)
+
+    # 각 멤버 점
+    member_colors = ["#ff6b6b", "#4ecdc4", "#ffe66d", "#a29bfe"]
+    member_symbols = ["diamond", "circle", "square", "star"]
+    for i, md in enumerate(members_data):
+        vp = md["vocal_profile"]
+        name = md["name"]
+        tq = vp.get("tone_quadrant", "unknown")
+        tq_ko = vp.get("tone_quadrant_ko", "미분류")
+        brightness = vp.get("brightness", 0.5)
+        weight = vp.get("weight", 0.5)
+        color = member_colors[i % len(member_colors)]
+
+        fig.add_trace(go.Scatter(
+            x=[brightness], y=[weight], mode="markers+text",
+            marker=dict(size=16, color=color, line=dict(width=2, color="#fff"),
+                        symbol=member_symbols[i % len(member_symbols)]),
+            text=[f" {name}"], textposition="top right",
+            textfont=dict(size=12, color=color, family="Noto Sans KR"),
+            name=f"{name} ({tq_ko})", showlegend=True))
+
+    # 축선
+    fig.add_hline(y=0.5, line=dict(color="#444", width=1, dash="dot"))
+    fig.add_vline(x=0.5, line=dict(color="#444", width=1, dash="dot"))
+
+    fig.update_layout(
+        xaxis=dict(range=[0, 1], title="← 어두운 ─── 밝기 ─── 밝은 →",
+                   titlefont=dict(size=11, color="#888"), showgrid=False,
+                   tickvals=[0, 0.5, 1], ticktext=["어둡", "", "밝음"],
+                   tickfont=dict(size=10, color="#666")),
+        yaxis=dict(range=[0, 1], title="← 가벼운 ─── 무게 ─── 묵직 →",
+                   titlefont=dict(size=11, color="#888"), showgrid=False,
+                   tickvals=[0, 0.5, 1], ticktext=["가벼운", "", "묵직"],
+                   tickfont=dict(size=10, color="#666")),
+        height=420, margin=dict(l=50, r=30, t=30, b=50),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5,
+                    font=dict(size=11)),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+
+def _render_combination_page():
+    """톤 조합 시뮬레이션 페이지"""
+    st.markdown("## 🎵 걸그룹 톤 조합 시뮬레이션")
+    st.markdown("""<div class="detail-text" style="margin-bottom:1rem;">
+        분석된 후보들의 톤 4사분면 데이터를 비교합니다.
+        마마무처럼 4개 사분면을 고르게 채우는 조합이 최적입니다.
+        <b style="color:#ddd;">종합 점수는 산출하지 않으며</b>, 각 차원을 독립적으로 봅니다.
+    </div>""", unsafe_allow_html=True)
+
+    vocal_reports = _get_vocal_reports()
+
+    if len(vocal_reports) < 2:
+        st.warning(f"톤 조합 시뮬레이션에는 보컬 프로파일이 있는 분석 결과가 2개 이상 필요합니다. (현재 {len(vocal_reports)}개)")
+        st.markdown("""<div class="card">
+            <div class="detail-text" style="line-height:2;">
+                • 보컬 영상으로 <b style="color:#ddd;">새 분석</b>을 실행하세요.<br>
+                • 분석 결과에 <b style="color:#ddd;">톤 4사분면 데이터</b>가 포함되어야 합니다.<br>
+                • 최소 2명, 최적 4명의 후보가 필요합니다.
+            </div>
+        </div>""", unsafe_allow_html=True)
+        return
+
+    # 후보 선택
+    report_labels = []
+    for r in vocal_reports:
+        m = r.get("meta", {})
+        n = m.get("name") or "(이름없음)"
+        tq_ko = r.get("vocal_profile", {}).get("tone_quadrant_ko", "?")
+        t = m.get("analysis_time", "")[:10]
+        report_labels.append(f"{n} · {tq_ko} · {t}")
+
+    st.markdown('<div class="section-title">👤 조합할 멤버를 선택하세요 (2~4명)</div>', unsafe_allow_html=True)
+    selected_indices = st.multiselect(
+        "후보 선택", range(len(report_labels)),
+        format_func=lambda i: report_labels[i],
+        max_selections=4,
+        label_visibility="collapsed")
+
+    if len(selected_indices) < 2:
+        st.info("2명 이상 선택해 주세요.")
+        # 전체 후보 톤 맵 미리보기
+        if vocal_reports:
+            st.markdown('<div class="section-title">📋 분석된 전체 후보 톤 맵</div>', unsafe_allow_html=True)
+            all_members = []
+            for r in vocal_reports:
+                all_members.append({
+                    "name": r.get("meta", {}).get("name") or "?",
+                    "vocal_profile": r.get("vocal_profile", {})
+                })
+            fig = render_combination_chart(all_members)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        return
+
+    # 선택된 멤버 데이터 구성
+    members_data = []
+    for idx in selected_indices:
+        r = vocal_reports[idx]
+        members_data.append({
+            "name": r.get("meta", {}).get("name") or "(이름없음)",
+            "vocal_profile": r.get("vocal_profile", {}),
+            "report": r,
+        })
+
+    members_vp = [md["vocal_profile"] for md in members_data]
+
+    # ── 조합 차트 ──
+    st.markdown('<div class="section-title">🎯 톤 조합 시각화</div>', unsafe_allow_html=True)
+    fig = render_combination_chart(members_data)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # ── 조합 분석 ──
+    comp = _calc_combination_score_components(members_vp)
+    coverage = comp["quadrants_covered"]
+    spread = comp["spread"]
+    overlap = comp["overlap_count"]
+    q_dist = comp["quadrant_distribution"]
+
+    st.markdown('<div class="section-title">📊 조합 분석 결과</div>', unsafe_allow_html=True)
+    st.markdown("""<div class="detail-text" style="margin-bottom:0.8rem;">
+        각 차원을 독립적으로 평가합니다. 종합 점수는 없습니다.
+    </div>""", unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        cov_color = "green" if coverage >= 3 else "yellow" if coverage >= 2 else "red"
+        cov_text = "우수 — 대부분 커버" if coverage >= 3 else "보통" if coverage >= 2 else "부족"
+        st.markdown(_metric_card("🎨 사분면 커버리지", f"{coverage}/4", cov_text, cov_color), unsafe_allow_html=True)
+    with c2:
+        sp_color = "green" if spread >= 0.6 else "yellow" if spread >= 0.3 else "red"
+        sp_text = "넓게 분포 — 다양한 톤" if spread >= 0.6 else "보통 분포" if spread >= 0.3 else "밀집 — 유사한 톤"
+        st.markdown(_metric_card("📐 톤 분산도", f"{spread:.0%}", sp_text, sp_color), unsafe_allow_html=True)
+    with c3:
+        ov_color = "green" if overlap == 0 else "yellow" if overlap == 1 else "red"
+        ov_text = "겹침 없음 — 이상적" if overlap == 0 else f"{overlap}개 사분면 겹침"
+        st.markdown(_metric_card("⚠️ 사분면 중복", f"{overlap}개", ov_text, ov_color), unsafe_allow_html=True)
+
+    # ── 사분면별 분포 ──
+    st.markdown("")
+    st.markdown('<div class="section-title">🗂️ 사분면별 배치</div>', unsafe_allow_html=True)
+
+    q_cols = st.columns(4)
+    for i, (qkey, qinfo) in enumerate(TONE_QUADRANT_INFO.items()):
+        with q_cols[i]:
+            members_in_q = [md["name"] for md in members_data
+                           if md["vocal_profile"].get("tone_quadrant") == qkey]
+            count = len(members_in_q)
+            border_style = f"border:1px solid {qinfo['color']};" if count > 0 else "opacity:0.4;"
+            names_html = "<br>".join([f"<b style='color:#eee;'>{n}</b>" for n in members_in_q]) if members_in_q else "<span style='color:#555;'>비어 있음</span>"
+            warning = ""
+            if count > 1:
+                warning = f"<div style='color:#e17055; font-size:0.78rem; margin-top:0.3rem;'>⚠️ {count}명 겹침</div>"
+            elif count == 0:
+                warning = "<div style='color:#fdcb6e; font-size:0.78rem; margin-top:0.3rem;'>빈 사분면</div>"
+
+            st.markdown(f"""<div class="card" style="text-align:center; {border_style}">
+                <div style="color:{qinfo['color']}; font-weight:600; margin-bottom:0.5rem;">{qinfo['ko']}</div>
+                <div style="font-size:0.8rem; color:#666; margin-bottom:0.4rem;">({qinfo['example']} 유형)</div>
+                {names_html}
+                {warning}
+            </div>""", unsafe_allow_html=True)
+
+    # ── 비어 있는 사분면에 필요한 톤 추천 ──
+    all_quadrants = set(TONE_QUADRANT_INFO.keys())
+    missing = all_quadrants - comp["quadrants_list"]
+    if missing and len(selected_indices) < 4:
+        st.markdown("")
+        st.markdown('<div class="section-title">💡 추천: 다음 멤버에 필요한 톤</div>', unsafe_allow_html=True)
+        for qkey in missing:
+            qinfo = TONE_QUADRANT_INFO[qkey]
+            st.markdown(f"""<div class="card" style="border-left:3px solid {qinfo['color']}; padding:0.8rem 1.2rem;">
+                <span style="color:{qinfo['color']}; font-weight:600;">{qinfo['ko']}</span> 유형 보컬이 필요합니다
+                <span class="detail-text"> — {qinfo['example']}처럼 이 사분면을 채울 수 있는 후보를 찾으세요.</span>
+            </div>""", unsafe_allow_html=True)
+
+    # ── 멤버별 상세 비교 ──
+    st.markdown("")
+    st.markdown('<div class="section-title">👥 멤버별 보컬 특성 비교</div>', unsafe_allow_html=True)
+
+    cols = st.columns(len(members_data))
+    for i, md in enumerate(members_data):
+        vp = md["vocal_profile"]
+        tq_ko = vp.get("tone_quadrant_ko", "?")
+        tq = vp.get("tone_quadrant", "unknown")
+        tq_color = TONE_QUADRANT_INFO.get(tq, {}).get("color", "#888")
+        with cols[i]:
+            st.markdown(f"""<div class="card" style="border-top:3px solid {tq_color};">
+                <div style="text-align:center; margin-bottom:0.5rem;">
+                    <div style="font-weight:700; color:#eee; font-size:1.05rem;">{md['name']}</div>
+                    <div style="color:{tq_color}; font-weight:600; font-size:0.9rem;">{tq_ko}</div>
+                </div>
+                <div style="font-size:0.82rem; color:#aaa; line-height:1.8;">
+                    밝기: <b style="color:#ddd;">{vp.get('brightness',0):.2f}</b><br>
+                    무게: <b style="color:#ddd;">{vp.get('weight',0):.2f}</b><br>
+                    음역: <b style="color:#ddd;">{vp.get('pitch_range_semitones',0):.0f}</b>반음<br>
+                    비브라토: <b style="color:#ddd;">{vp.get('vibrato_rate_hz',0):.1f}Hz</b><br>
+                    호흡성: <b style="color:#ddd;">{vp.get('breathiness',0):.2f}</b><br>
+                    다이내믹: <b style="color:#ddd;">{vp.get('dynamic_range_db',0):.1f}dB</b>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── 자동 최적 조합 추천 (4명 이상 후보가 있을 때) ──
+    if len(vocal_reports) >= 4 and len(selected_indices) != len(vocal_reports):
+        st.markdown("")
+        with st.expander("🤖 AI 자동 추천: 전체 후보 중 최적 4인 조합"):
+            st.markdown("""<div class="detail-text" style="margin-bottom:0.8rem;">
+                모든 후보 중에서 사분면 커버리지가 가장 넓고, 톤 분산도가 높은 4인 조합을 찾습니다.
+                <b>종합 점수가 아닌</b>, 사분면 커버리지(더 많은 사분면) → 분산도(더 넓은 분포) 순으로 선별합니다.
+            </div>""", unsafe_allow_html=True)
+
+            all_vp = [(i, r.get("vocal_profile", {}), r.get("meta", {}).get("name") or "?")
+                      for i, r in enumerate(vocal_reports)]
+
+            best_combos = []
+            max_group = min(4, len(all_vp))
+            for combo in combinations(range(len(all_vp)), max_group):
+                combo_vp = [all_vp[c][1] for c in combo]
+                comp_c = _calc_combination_score_components(combo_vp)
+                best_combos.append({
+                    "indices": combo,
+                    "names": [all_vp[c][2] for c in combo],
+                    "coverage": comp_c["quadrants_covered"],
+                    "spread": comp_c["spread"],
+                    "overlap": comp_c["overlap_count"],
+                })
+
+            # 정렬: 커버리지 내림차순 → 분산도 내림차순 → 겹침 오름차순
+            best_combos.sort(key=lambda x: (-x["coverage"], -x["spread"], x["overlap"]))
+
+            for rank, bc in enumerate(best_combos[:3], 1):
+                cov_color = "#00b894" if bc["coverage"] >= 3 else "#fdcb6e"
+                st.markdown(f"""<div class="card" style="padding:0.8rem 1.2rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-weight:600; color:#eee;">#{rank} {' + '.join(bc['names'])}</span>
+                        <span style="color:{cov_color}; font-size:0.9rem;">{bc['coverage']}/4 사분면</span>
+                    </div>
+                    <div class="detail-text">
+                        톤 분산: {bc['spread']:.0%} · 사분면 겹침: {bc['overlap']}개
+                    </div>
+                </div>""", unsafe_allow_html=True)
+
+            if not best_combos:
+                st.caption("조합 가능한 후보가 부족합니다.")
+
+
+# ══════════════════════════════════════
 # 메인
 # ══════════════════════════════════════
 def main():
@@ -1123,7 +1441,7 @@ def main():
         st.caption("AI 아이돌 원석 발굴")
         st.divider()
 
-        mode = st.radio("", ["🔍 새 분석", "📂 지난 분석"], label_visibility="collapsed")
+        mode = st.radio("", ["🔍 새 분석", "📂 지난 분석", "🎵 톤 조합"], label_visibility="collapsed")
 
         if mode == "🔍 새 분석":
             url = st.text_input("영상 주소", placeholder="YouTube 또는 Instagram URL")
@@ -1154,6 +1472,8 @@ def main():
             st.warning("영상 주소를 입력해주세요.")
         else:
             _render_main_page()
+    elif mode == "🎵 톤 조합":
+        _render_combination_page()
     else:
         reports = load_reports()
         if not reports:
