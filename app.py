@@ -1238,8 +1238,8 @@ def _render_100dim_intro():
     <div class="card">
         <div class="card-title">🧬 100차원 보컬 벡터 분석</div>
         <p style="color:#aaa; line-height:1.8;">
-            영상 URL 하나로 <b>57개 음향 지표</b>를 자동 측정합니다.<br>
-            YouTube, Instagram, TikTok 등 링크를 붙여넣으면 오디오를 추출하여 3개 축 × 6개 알고리즘으로 보컬의 모든 차원을 스캔합니다.
+            <b>57개 음향 지표</b>를 자동 측정합니다.<br>
+            URL을 붙여넣거나 음원 파일을 업로드하면 3개 축 × 6개 알고리즘으로 보컬의 모든 차원을 스캔합니다.
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1274,9 +1274,10 @@ def _render_100dim_intro():
     <div class="card" style="border-color:#4a4a6a;">
         <div class="card-title">📌 사용법</div>
         <p style="color:#aaa; line-height:1.8;">
-            1. 왼쪽에 <b>영상 URL</b>(YouTube/Instagram/TikTok)을 붙여넣으세요<br>
+            1. 왼쪽에서 <b>URL 입력</b> 또는 <b>파일 업로드</b>를 선택하세요<br>
             2. 가수명을 입력하고 <b>🧬 100차원 분석</b> 버튼을 누르세요<br>
-            3. 자동으로 오디오를 추출하고 약 30초 후 57개 지표 측정 결과가 표시됩니다<br><br>
+            3. 약 30초 후 57개 지표 측정 결과가 표시됩니다<br>
+            <span style="color:#5bc0de;">💡 YouTube 403 오류 시 → 파일 업로드로 전환하세요</span><br><br>
             <span style="color:#f0ad4e;">⚠️ 현재 Phase 1 — tier-1(음향분석) 57개만 측정됩니다.<br>
             tier-2(ML모델) 43개는 Phase 2에서 추가됩니다.</span>
         </p>
@@ -1284,26 +1285,44 @@ def _render_100dim_intro():
     """, unsafe_allow_html=True)
 
 
-def _run_100dim_analysis(url: str, artist_name: str):
-    """100차원 분석 실행 (URL → 다운로드 → 측정 → 렌더링)"""
-    from idol_scout.screener.downloader import download_audio_only
+def _run_100dim_analysis(url: str | None, artist_name: str, uploaded_file=None):
+    """100차원 분석 실행 (URL 또는 업로드 파일 → 측정 → 렌더링)"""
+    from pathlib import Path
+    import tempfile
 
-    # 1) URL에서 오디오만 다운로드 (영상 불필요 — 속도 최적화)
-    with st.spinner("📥 오디오 다운로드 중..."):
-        dl = download_audio_only(url)
+    audio_path = None
+    dl = None
+    tmp_path = None  # 업로드 파일 임시 저장 경로
 
-    if not dl.success:
-        st.error(f"❌ 다운로드 실패: {dl.error}")
+    # ── 입력 소스 분기 ──
+    if uploaded_file is not None:
+        # 파일 업로드 모드
+        with st.spinner("📁 파일 준비 중..."):
+            suffix = Path(uploaded_file.name).suffix or ".wav"
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+            tmp.write(uploaded_file.read())
+            tmp.close()
+            tmp_path = Path(tmp.name)
+            audio_path = tmp_path
+        display_name = artist_name or uploaded_file.name
+    elif url:
+        # URL 다운로드 모드
+        from idol_scout.screener.downloader import download_audio_only
+        with st.spinner("📥 오디오 다운로드 중..."):
+            dl = download_audio_only(url)
+        if not dl.success:
+            st.error(f"❌ 다운로드 실패: {dl.error}")
+            return
+        audio_path = dl.audio_path
+        if not audio_path or not audio_path.exists():
+            st.error("❌ 오디오를 추출할 수 없습니다. 다른 URL을 시도해주세요.")
+            return
+        display_name = artist_name or dl.title or url
+    else:
+        st.warning("영상 주소 또는 음원 파일을 입력해주세요.")
         return
 
-    audio_path = dl.audio_path
-    if not audio_path or not audio_path.exists():
-        st.error("❌ 오디오를 추출할 수 없습니다. 다른 URL을 시도해주세요.")
-        return
-
-    display_name = artist_name or dl.title or url
-
-    # 2) 100차원 보컬 벡터 측정
+    # ── 100차원 보컬 벡터 측정 ──
     try:
         with st.spinner("🧬 100차원 보컬 벡터 측정 중... (약 30초)"):
             from idol_scout.screener.normalizer import screen_vocal_100
@@ -1317,12 +1336,12 @@ def _run_100dim_analysis(url: str, artist_name: str):
         import traceback
         st.code(traceback.format_exc())
     finally:
-        # 임시 다운로드 파일 정리
+        # 임시 파일 정리
         try:
-            if dl.audio_path and dl.audio_path.exists():
+            if tmp_path and tmp_path.exists():
+                tmp_path.unlink()
+            if dl and dl.audio_path and dl.audio_path.exists():
                 dl.audio_path.unlink()
-            if audio_path and audio_path != dl.audio_path and audio_path.exists():
-                audio_path.unlink()
         except Exception:
             pass
 
@@ -1708,8 +1727,14 @@ def main():
             run_btn = st.button("🚀 분석 시작", type="primary", use_container_width=True)
         elif mode == "🧬 100차원":
             st.markdown("##### 100차원 보컬 벡터 분석")
-            st.caption("영상 URL로 57개 음향 지표를 측정합니다")
-            v2_url = st.text_input("영상 주소", placeholder="YouTube / Instagram / TikTok URL", key="v2_url")
+            st.caption("57개 음향 지표를 측정합니다")
+            v2_src = st.radio("입력 방식", ["🔗 URL", "📁 파일 업로드"], horizontal=True, key="v2_src")
+            v2_url = ""
+            v2_file = None
+            if v2_src == "🔗 URL":
+                v2_url = st.text_input("영상 주소", placeholder="YouTube / Instagram / TikTok URL", key="v2_url")
+            else:
+                v2_file = st.file_uploader("음원 파일", type=["mp3", "wav", "m4a", "ogg", "flac", "mp4", "webm"], key="v2_file")
             v2_name = st.text_input("가수명", placeholder="예: 화사", key="v2_name")
             v2_run = st.button("🧬 100차원 분석", type="primary", use_container_width=True)
             run_btn = False; url = ""
@@ -1731,10 +1756,10 @@ def main():
         else:
             _render_main_page()
     elif mode == "🧬 100차원":
-        if v2_run and v2_url:
-            _run_100dim_analysis(v2_url, v2_name)
+        if v2_run and (v2_url or v2_file):
+            _run_100dim_analysis(v2_url if v2_url else None, v2_name, v2_file)
         elif v2_run:
-            st.warning("영상 주소를 입력해주세요.")
+            st.warning("영상 주소 또는 음원 파일을 입력해주세요.")
         else:
             _render_100dim_intro()
     elif mode == "🎵 톤 조합":
