@@ -192,7 +192,7 @@ def download_video(url: str, output_dir: Optional[Path] = None) -> DownloadResul
 def download_audio_only(url: str, output_dir: Optional[Path] = None) -> DownloadResult:
     """
     URL에서 오디오만 다운로드 (100차원 분석용 — 영상 불필요).
-    영상 다운로드를 건너뛰어 속도 2~3배 향상.
+    단일 연결로 메타데이터 + 다운로드를 한 번에 처리하여 속도 최적화.
     """
     try:
         import yt_dlp
@@ -202,26 +202,10 @@ def download_audio_only(url: str, output_dir: Optional[Path] = None) -> Download
     out_dir = output_dir or DOWNLOAD_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 메타데이터 추출
-    info = extract_info(url)
-    if not info or (isinstance(info, dict) and "_error" in info and len(info) == 1):
-        err_detail = info.get("_error", "알 수 없는 오류") if isinstance(info, dict) else "응답 없음"
-        return DownloadResult(success=False, url=url, error=f"메타데이터 추출 실패: {err_detail}")
+    # 임시 이름으로 설정 (다운로드 후 실제 제목 확인)
+    tmp_name = "audio_download"
+    audio_src = out_dir / f"{tmp_name}.%(ext)s"
 
-    title = info.get("title", "unknown")
-    duration = info.get("duration", 0) or 0
-    uploader = info.get("uploader", info.get("channel", "unknown"))
-
-    if duration > MAX_VIDEO_DURATION:
-        return DownloadResult(
-            success=False, url=url,
-            error=f"영상 길이 {duration:.0f}초 > 최대 {MAX_VIDEO_DURATION}초"
-        )
-
-    safe_name = sanitize_filename(title)
-
-    # 오디오만 다운로드
-    audio_src = out_dir / f"{safe_name}_audio.m4a"
     ydl_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio",
         "outtmpl": str(audio_src),
@@ -233,20 +217,36 @@ def download_audio_only(url: str, output_dir: Optional[Path] = None) -> Download
     if _FFMPEG_EXE:
         ydl_opts["ffmpeg_location"] = str(Path(_FFMPEG_EXE).parent)
 
+    # 단일 연결: extract_info + download 동시 수행
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=True)
     except yt_dlp.utils.DownloadError as e:
-        return DownloadResult(success=False, url=url, title=title, error=f"오디오 다운로드 실패: {str(e)[:300]}")
+        return DownloadResult(success=False, url=url, error=f"다운로드 실패: {str(e)[:300]}")
     except Exception as e:
-        return DownloadResult(success=False, url=url, title=title, error=f"다운로드 오류: {str(e)[:200]}")
+        return DownloadResult(success=False, url=url, error=f"오류: {str(e)[:200]}")
 
-    actual_audio_src = _find_downloaded_file(out_dir, f"{safe_name}_audio", [".m4a", ".webm", ".opus", ".ogg"])
+    if not info:
+        return DownloadResult(success=False, url=url, error="메타데이터를 가져올 수 없습니다")
+
+    title = info.get("title", "unknown")
+    duration = info.get("duration", 0) or 0
+    uploader = info.get("uploader", info.get("channel", "unknown"))
+
+    if duration > MAX_VIDEO_DURATION:
+        return DownloadResult(
+            success=False, url=url,
+            error=f"영상 길이 {duration:.0f}초 > 최대 {MAX_VIDEO_DURATION}초"
+        )
+
+    # 다운로드된 파일 찾기
+    actual_audio_src = _find_downloaded_file(out_dir, tmp_name, [".m4a", ".webm", ".opus", ".ogg", ".mp3", ".mp4"])
 
     # wav 변환
     actual_audio = None
     if actual_audio_src and _FFMPEG_EXE:
         import subprocess
+        safe_name = sanitize_filename(title)
         wav_path = out_dir / f"{safe_name}.wav"
         try:
             cmd_convert = [
@@ -260,6 +260,11 @@ def download_audio_only(url: str, output_dir: Optional[Path] = None) -> Download
             r = subprocess.run(cmd_convert, capture_output=True, timeout=60)
             if r.returncode == 0 and wav_path.exists():
                 actual_audio = wav_path
+                # 원본 소스 파일 정리
+                try:
+                    actual_audio_src.unlink()
+                except Exception:
+                    pass
         except Exception:
             pass
 
