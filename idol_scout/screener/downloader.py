@@ -47,29 +47,39 @@ def sanitize_filename(name: str) -> str:
 
 
 def extract_info(url: str) -> dict:
-    """yt-dlp Python API로 메타데이터만 추출 (다운로드 없이)"""
+    """yt-dlp Python API로 메타데이터만 추출 (다운로드 없이). YouTube는 클라이언트 폴백."""
     try:
         import yt_dlp
     except ImportError:
         return {"_error": "yt-dlp가 설치되지 않았습니다"}
 
-    ydl_opts = {
+    base_opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "socket_timeout": 30,
     }
     if _FFMPEG_EXE:
-        ydl_opts["ffmpeg_location"] = str(Path(_FFMPEG_EXE).parent)
+        base_opts["ffmpeg_location"] = str(Path(_FFMPEG_EXE).parent)
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return info or {}
-    except yt_dlp.utils.DownloadError as e:
-        return {"_error": f"yt-dlp 오류: {str(e)[:300]}"}
-    except Exception as e:
-        return {"_error": f"메타데이터 추출 실패: {str(e)[:300]}"}
+    strategies = _YT_CLIENT_STRATEGIES if _is_youtube(url) else [{}]
+    last_error = ""
+
+    for strategy in strategies:
+        ydl_opts = {**base_opts, **strategy}
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info:
+                    return info
+        except yt_dlp.utils.DownloadError as e:
+            last_error = f"yt-dlp 오류: {str(e)[:300]}"
+            continue
+        except Exception as e:
+            last_error = f"메타데이터 추출 실패: {str(e)[:300]}"
+            continue
+
+    return {"_error": last_error or "메타데이터를 가져올 수 없습니다"}
 
 
 def download_video(url: str, output_dir: Optional[Path] = None) -> DownloadResult:
@@ -104,7 +114,7 @@ def download_video(url: str, output_dir: Optional[Path] = None) -> DownloadResul
 
     # 2단계: 영상 다운로드 (단일 포맷, 병합 불필요)
     video_path = out_dir / f"{safe_name}.mp4"
-    ydl_opts_video = {
+    base_opts_video = {
         "format": "best[ext=mp4]/best",
         "outtmpl": str(video_path),
         "noplaylist": True,
@@ -113,20 +123,24 @@ def download_video(url: str, output_dir: Optional[Path] = None) -> DownloadResul
         "socket_timeout": 30,
     }
     if _FFMPEG_EXE:
-        ydl_opts_video["ffmpeg_location"] = str(Path(_FFMPEG_EXE).parent)
+        base_opts_video["ffmpeg_location"] = str(Path(_FFMPEG_EXE).parent)
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
-            ydl.download([url])
-    except Exception:
-        pass
+    strategies = _YT_CLIENT_STRATEGIES if _is_youtube(url) else [{}]
+    for strategy in strategies:
+        ydl_opts_video = {**base_opts_video, **strategy}
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
+                ydl.download([url])
+            break
+        except Exception:
+            continue
 
     actual_video = _find_downloaded_file(out_dir, safe_name, [".mp4", ".webm", ".mkv"])
 
     # 3단계: 오디오 다운로드
     audio_src_name = f"{safe_name}_audio"
     audio_src = out_dir / f"{audio_src_name}.m4a"
-    ydl_opts_audio = {
+    base_opts_audio = {
         "format": "bestaudio[ext=m4a]/bestaudio",
         "outtmpl": str(audio_src),
         "noplaylist": True,
@@ -135,13 +149,16 @@ def download_video(url: str, output_dir: Optional[Path] = None) -> DownloadResul
         "socket_timeout": 30,
     }
     if _FFMPEG_EXE:
-        ydl_opts_audio["ffmpeg_location"] = str(Path(_FFMPEG_EXE).parent)
+        base_opts_audio["ffmpeg_location"] = str(Path(_FFMPEG_EXE).parent)
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
-            ydl.download([url])
-    except Exception:
-        pass
+    for strategy in strategies:
+        ydl_opts_audio = {**base_opts_audio, **strategy}
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
+                ydl.download([url])
+            break
+        except Exception:
+            continue
 
     actual_audio_src = _find_downloaded_file(out_dir, audio_src_name, [".m4a", ".webm", ".opus", ".ogg"])
 
@@ -189,10 +206,34 @@ def download_video(url: str, output_dir: Optional[Path] = None) -> DownloadResul
     )
 
 
+def _is_youtube(url: str) -> bool:
+    """YouTube URL 여부 판별"""
+    return any(d in url.lower() for d in ["youtube.com", "youtu.be", "youtube-nocookie.com"])
+
+
+# YouTube 403 우회를 위한 클라이언트 전략 (순서대로 시도)
+_YT_CLIENT_STRATEGIES = [
+    {
+        "extractor_args": {"youtube": {"player_client": ["android_creator"]}},
+        "http_headers": {"User-Agent": "com.google.android.apps.youtube.creator/24.45.100 (Linux; U; Android 14) gzip"},
+    },
+    {
+        "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+        "http_headers": {"User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"},
+    },
+    {
+        "extractor_args": {"youtube": {"player_client": ["ios"]}},
+        "http_headers": {"User-Agent": "com.google.ios.youtube/19.29.1 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X)"},
+    },
+    {},  # 기본 클라이언트 (폴백)
+]
+
+
 def download_audio_only(url: str, output_dir: Optional[Path] = None) -> DownloadResult:
     """
     URL에서 오디오만 다운로드 (100차원 분석용 — 영상 불필요).
     단일 연결로 메타데이터 + 다운로드를 한 번에 처리하여 속도 최적화.
+    YouTube 403 차단 시 여러 클라이언트 전략으로 자동 재시도.
     """
     try:
         import yt_dlp
@@ -206,7 +247,7 @@ def download_audio_only(url: str, output_dir: Optional[Path] = None) -> Download
     tmp_name = "audio_download"
     audio_src = out_dir / f"{tmp_name}.%(ext)s"
 
-    ydl_opts = {
+    base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio",
         "outtmpl": str(audio_src),
         "noplaylist": True,
@@ -215,16 +256,36 @@ def download_audio_only(url: str, output_dir: Optional[Path] = None) -> Download
         "socket_timeout": 30,
     }
     if _FFMPEG_EXE:
-        ydl_opts["ffmpeg_location"] = str(Path(_FFMPEG_EXE).parent)
+        base_opts["ffmpeg_location"] = str(Path(_FFMPEG_EXE).parent)
 
-    # 단일 연결: extract_info + download 동시 수행
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except yt_dlp.utils.DownloadError as e:
-        return DownloadResult(success=False, url=url, error=f"다운로드 실패: {str(e)[:300]}")
-    except Exception as e:
-        return DownloadResult(success=False, url=url, error=f"오류: {str(e)[:200]}")
+    # YouTube URL이면 여러 클라이언트 전략으로 재시도, 아니면 기본만
+    strategies = _YT_CLIENT_STRATEGIES if _is_youtube(url) else [{}]
+    last_error = ""
+    info = None
+
+    for strategy in strategies:
+        ydl_opts = {**base_opts, **strategy}
+        # 이전 시도에서 남은 파일 정리
+        for f in out_dir.glob(f"{tmp_name}.*"):
+            if f.suffix != ".%(ext)s":
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+            if info:
+                break  # 성공
+        except yt_dlp.utils.DownloadError as e:
+            last_error = str(e)[:300]
+            continue
+        except Exception as e:
+            last_error = str(e)[:200]
+            continue
+
+    if not info:
+        return DownloadResult(success=False, url=url, error=f"다운로드 실패: {last_error}")
 
     if not info:
         return DownloadResult(success=False, url=url, error="메타데이터를 가져올 수 없습니다")
