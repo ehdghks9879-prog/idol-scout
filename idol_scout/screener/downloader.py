@@ -27,8 +27,14 @@ try:
 except ImportError:
     pass
 
-# yt-dlp 기본 명령: python -m yt_dlp + JS 런타임 + 원격 컴포넌트
-_YT_DLP_BASE = [sys.executable, "-m", "yt_dlp", "--js-runtimes", "node", "--remote-components", "ejs:github"]
+# yt-dlp 기본 명령
+_YT_DLP_BASE = [sys.executable, "-m", "yt_dlp"]
+
+# Node.js가 있을 때만 JS 런타임 플래그 추가
+import shutil as _shutil
+if _shutil.which("node"):
+    _YT_DLP_BASE += ["--js-runtimes", "node", "--remote-components", "ejs:github"]
+
 if _FFMPEG_EXE:
     _YT_DLP_BASE += ["--ffmpeg-location", str(Path(_FFMPEG_EXE).parent)]
 
@@ -50,11 +56,18 @@ def extract_info(url: str) -> dict:
     """yt-dlp로 메타데이터만 추출 (다운로드 없이)"""
     cmd = [*_YT_DLP_BASE, "--dump-json", "--no-download", url]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             return json.loads(result.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+        else:
+            # 에러 정보를 dict에 담아 반환 (호출자가 에러 확인 가능)
+            return {"_error": result.stderr.strip() or f"yt-dlp exit code {result.returncode}"}
+    except subprocess.TimeoutExpired:
+        return {"_error": "메타데이터 추출 타임아웃 (60초)"}
+    except json.JSONDecodeError as e:
+        return {"_error": f"JSON 파싱 실패: {e}"}
+    except Exception as e:
+        return {"_error": str(e)}
     return {}
 
 
@@ -77,10 +90,11 @@ def download_video(url: str, output_dir: Optional[Path] = None) -> DownloadResul
 
     # 1단계: 메타데이터 추출
     info = extract_info(url)
-    if not info:
+    if not info or (isinstance(info, dict) and "_error" in info and len(info) == 1):
+        err_detail = info.get("_error", "알 수 없는 오류") if isinstance(info, dict) else "응답 없음"
         return DownloadResult(
             success=False, url=url,
-            error="메타데이터 추출 실패. URL을 확인하세요."
+            error=f"메타데이터 추출 실패: {err_detail}"
         )
 
     title = info.get("title", "unknown")
