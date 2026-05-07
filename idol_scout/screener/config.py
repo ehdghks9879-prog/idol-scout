@@ -77,6 +77,14 @@ VOCAL_SUB_INDICATORS = {
     "resonance_pattern": "공명 패턴",       # 포먼트 특성
 }
 
+# ── 100차원 보컬 벡터 설정 (v2) ──────────────────────────
+V2_PITCH_FMIN = 50                # pyin 최소 주파수
+V2_PITCH_FMAX = 2000              # pyin 최대 주파수 (휘슬 포함)
+V2_SUSTAINED_NOTE_THRESHOLD = 1.0 # 지속음 판정: 반음 이내
+V2_MELISMA_MIN_SEMITONES = 1.5    # 멜리스마 최소 변화
+V2_MELISMA_MAX_SEMITONES = 5.0    # 멜리스마 최대 변화
+V2_VIBRATO_ACF_THRESHOLD = 0.25   # 비브라토 자기상관 임계치
+
 # ── 톤 4사분면 정의 ──────────────────────────────────────
 # X축: 밝기(Spectral Centroid) — 낮으면 어둡고, 높으면 밝다
 # Y축: 무게(저주파 에너지 비율) — 낮으면 가볍고, 높으면 묵직하다

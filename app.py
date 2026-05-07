@@ -1,6 +1,6 @@
 """
-idol_scout — Streamlit 웹앱 v3.1
-극단값 탐지 패러다임 · 쉬운 언어 · 맥락 설명 강화
+idol_scout — Streamlit 웹앱 v4.0
+극단값 탐지 패러다임 · 100차원 보컬 벡터 · 쉬운 언어
 """
 
 import streamlit as st
@@ -1228,6 +1228,243 @@ def render_combination_chart(members_data):
     return fig
 
 
+# ══════════════════════════════════════
+# 100차원 보컬 벡터 분석 (v2)
+# ══════════════════════════════════════
+
+def _render_100dim_intro():
+    """100차원 분석 소개 페이지"""
+    st.markdown("""
+    <div class="card">
+        <div class="card-title">🧬 100차원 보컬 벡터 분석</div>
+        <p style="color:#aaa; line-height:1.8;">
+            음원 파일 하나로 <b>57개 음향 지표</b>를 자동 측정합니다.<br>
+            기존 6개 지표 분석의 확장판으로, 3개 축 × 6개 알고리즘으로 보컬의 모든 차원을 스캔합니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("""
+        <div class="card">
+            <div class="card-title">A축: 기술적 안정성</div>
+            <p style="color:#aaa;">음정정확도, 음역대, 비브라토,<br>다이내믹, 발성, 회복력</p>
+            <div style="font-size:2rem; text-align:center;">🎯</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown("""
+        <div class="card">
+            <div class="card-title">B축: 음색 독창성</div>
+            <p style="color:#aaa;">스펙트럼 특성, 배음 구조,<br>음색 시간 안정성, 고유성</p>
+            <div style="font-size:2rem; text-align:center;">✨</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        st.markdown("""
+        <div class="card">
+            <div class="card-title">C축: 정서 전달력</div>
+            <p style="color:#aaa;">표현 도구 활용, 정서 종류,<br>진정성 (Phase 2 ML)</p>
+            <div style="font-size:2rem; text-align:center;">💫</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="card" style="border-color:#4a4a6a;">
+        <div class="card-title">📌 사용법</div>
+        <p style="color:#aaa; line-height:1.8;">
+            1. 왼쪽에서 <b>음원 파일</b>(MP3/WAV/M4A)을 업로드하세요<br>
+            2. 가수명을 입력하고 <b>🧬 100차원 분석</b> 버튼을 누르세요<br>
+            3. 약 30초 후 57개 지표 측정 결과가 표시됩니다<br><br>
+            <span style="color:#f0ad4e;">⚠️ 현재 Phase 1 — tier-1(음향분석) 57개만 측정됩니다.<br>
+            tier-2(ML모델) 43개는 Phase 2에서 추가됩니다.</span>
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _run_100dim_analysis(audio_file, artist_name: str):
+    """100차원 분석 실행 + 결과 렌더링"""
+    import tempfile
+
+    # 임시 파일로 저장
+    suffix = Path(audio_file.name).suffix
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(audio_file.read())
+        tmp_path = Path(tmp.name)
+
+    try:
+        with st.spinner("🧬 100차원 보컬 벡터 측정 중... (약 30초)"):
+            from idol_scout.screener.normalizer import screen_vocal_100
+            vector = screen_vocal_100(tmp_path, content_type="vocal_audio")
+
+        st.toast(f"✅ 측정 완료! {vector.tier1_measured}개 지표 측정")
+        _render_100dim_dashboard(vector, artist_name or audio_file.name)
+
+    except Exception as e:
+        st.error(f"❌ 분석 오류: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+
+def _render_100dim_dashboard(vector, artist_name: str):
+    """100차원 분석 결과 대시보드"""
+    from idol_scout.screener.indicators_100 import INDICATOR_REGISTRY
+
+    # ── 헤더 ──
+    st.markdown(f"""
+    <div class="card" style="border-color: {'#28a745' if vector.has_any_outlier else '#6c757d'};">
+        <div class="card-title">🧬 {artist_name} — 100차원 보컬 벡터</div>
+        <p style="color:#aaa;">
+            톤: <b>{vector.tone_quadrant_ko}</b> |
+            측정: <b>{vector.tier1_measured}</b>개 (tier-1) |
+            처리시간: <b>{vector.processing_time_sec:.1f}</b>초
+        </p>
+        <p style="color: {'#28a745' if vector.has_any_outlier else '#dc3545'}; font-size:1.1rem;">
+            {'🔥 ' + vector.outlier_summary if vector.has_any_outlier else '⚪ ' + vector.outlier_summary}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── 축별 극단값 요약 ──
+    col_a, col_b, col_c = st.columns(3)
+    _render_axis_card(col_a, "A축: 기술적 안정성", "🎯", vector.axis_a_outliers, vector)
+    _render_axis_card(col_b, "B축: 음색 독창성", "✨", vector.axis_b_outliers, vector)
+    _render_axis_card(col_c, "C축: 정서 전달력", "💫", vector.axis_c_outliers, vector)
+
+    # ── 측정 성공 항목 상세 ──
+    st.markdown("---")
+    st.markdown("### 📊 지표별 상세 측정 결과")
+
+    # 알고리즘 카테고리별 탭
+    algo_tabs = st.tabs(["🎵 Pitch", "⚡ Energy", "🌈 Spectrum", "🎼 Vibrato", "📏 Range", "🔊 Formant"])
+
+    algo_groups = {
+        "Pitch_Analysis": 0,
+        "Energy_Analysis": 1,
+        "Spectrum_Analysis": 2,
+        "Vibrato_Analysis": 3,
+        "Voice_Range": 4,
+        "Formant_Analysis": 5,
+    }
+
+    for iid, m in sorted(vector.measurements.items()):
+        if not m.measured:
+            continue
+        spec = INDICATOR_REGISTRY.get(iid)
+        if spec is None or spec.algorithm not in algo_groups:
+            continue
+
+        tab_idx = algo_groups[spec.algorithm]
+        with algo_tabs[tab_idx]:
+            pct_str = f"{m.percentile:.0f}%" if m.percentile is not None else "—"
+            genius_str = f" | {m.genius_level}" if m.genius_level else ""
+
+            # 백분위 바 색상
+            if m.percentile is not None:
+                if m.percentile >= 90:
+                    bar_color = "#28a745"
+                elif m.percentile >= 70:
+                    bar_color = "#ffc107"
+                elif m.percentile <= 15:
+                    bar_color = "#17a2b8"  # 초이질
+                else:
+                    bar_color = "#6c757d"
+                bar_width = min(100, max(2, m.percentile))
+            else:
+                bar_color = "#6c757d"
+                bar_width = 0
+
+            st.markdown(f"""
+            <div style="background:#1e1e2e; border-radius:8px; padding:0.6rem 1rem; margin:0.3rem 0; border-left:3px solid {bar_color};">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span style="color:#ddd; font-size:0.9rem;">
+                        <code style="color:#888;">{iid}</code> {m.name}
+                    </span>
+                    <span style="color:{bar_color}; font-weight:bold;">
+                        {pct_str}{genius_str}
+                    </span>
+                </div>
+                <div style="background:#2a2a3e; border-radius:4px; height:6px; margin-top:4px;">
+                    <div style="background:{bar_color}; width:{bar_width}%; height:100%; border-radius:4px;"></div>
+                </div>
+                <div style="color:#666; font-size:0.75rem; margin-top:2px;">
+                    raw: {m.raw_value:.4f} | 신뢰도: {m.confidence:.2f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ── 미측정 항목 (tier-2) ──
+    with st.expander(f"⏳ 미측정 항목 ({100 - vector.total_measured}개 — Phase 2 ML 모델 필요)"):
+        failed = {k: v for k, v in vector.measurements.items() if not v.measured}
+        for iid in sorted(failed.keys()):
+            m = failed[iid]
+            st.caption(f"`{iid}` {m.name} — {m.error}")
+
+    # ── JSON 내보내기 ──
+    export_data = {
+        "artist": artist_name,
+        "tone_quadrant": vector.tone_quadrant_ko,
+        "total_measured": vector.total_measured,
+        "tier1_measured": vector.tier1_measured,
+        "has_outlier": vector.has_any_outlier,
+        "outlier_summary": vector.outlier_summary,
+        "axis_a_outliers": vector.axis_a_outliers,
+        "axis_b_outliers": vector.axis_b_outliers,
+        "axis_c_outliers": vector.axis_c_outliers,
+        "measurements": {
+            iid: {
+                "name": m.name,
+                "raw_value": m.raw_value,
+                "percentile": m.percentile,
+                "confidence": m.confidence,
+                "genius_level": m.genius_level,
+                "measured": m.measured,
+            }
+            for iid, m in vector.measurements.items()
+        }
+    }
+    st.download_button(
+        "📥 100차원 데이터 내려받기",
+        json.dumps(export_data, ensure_ascii=False, indent=2),
+        file_name=f"vocal_vector_100_{artist_name}.json",
+        mime="application/json"
+    )
+
+
+def _render_axis_card(col, title: str, icon: str, outlier_ids: list, vector):
+    """축별 카드 렌더링"""
+    count = len(outlier_ids)
+    color = "#28a745" if count > 0 else "#6c757d"
+
+    details = ""
+    for iid in outlier_ids[:5]:
+        m = vector.measurements.get(iid)
+        if m:
+            pct = f"{m.percentile:.0f}%" if m.percentile is not None else "?"
+            details += f"<br>• {m.name} ({pct})"
+    if count > 5:
+        details += f"<br>• ... 외 {count - 5}개"
+
+    with col:
+        st.markdown(f"""
+        <div class="card" style="border-color:{color}; text-align:center;">
+            <div style="font-size:1.8rem;">{icon}</div>
+            <div class="card-title">{title}</div>
+            <div style="font-size:1.5rem; color:{color}; font-weight:bold;">
+                {count}개 극단값
+            </div>
+            <div style="color:#aaa; font-size:0.8rem; text-align:left;">{details}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
 def _render_combination_page():
     """톤 조합 시뮬레이션 페이지"""
     st.markdown("## 🎵 걸그룹 톤 조합 시뮬레이션")
@@ -1441,7 +1678,7 @@ def main():
         st.caption("AI 아이돌 원석 발굴")
         st.divider()
 
-        mode = st.radio("", ["🔍 새 분석", "📂 지난 분석", "🎵 톤 조합"], label_visibility="collapsed")
+        mode = st.radio("", ["🔍 새 분석", "📂 지난 분석", "🎵 톤 조합", "🧬 100차원"], label_visibility="collapsed")
 
         if mode == "🔍 새 분석":
             url = st.text_input("영상 주소", placeholder="YouTube 또는 Instagram URL")
@@ -1455,6 +1692,13 @@ def main():
                 agency = st.text_input("기획사", placeholder="")
 
             run_btn = st.button("🚀 분석 시작", type="primary", use_container_width=True)
+        elif mode == "🧬 100차원":
+            st.markdown("##### 100차원 보컬 벡터 분석")
+            st.caption("음원 파일로 57개 음향 지표를 측정합니다")
+            audio_file = st.file_uploader("음원 업로드", type=["mp3", "wav", "m4a", "ogg", "flac"])
+            v2_name = st.text_input("가수명", placeholder="예: 화사", key="v2_name")
+            v2_run = st.button("🧬 100차원 분석", type="primary", use_container_width=True)
+            run_btn = False; url = ""
         else:
             run_btn = False; url = ""
 
@@ -1472,6 +1716,13 @@ def main():
             st.warning("영상 주소를 입력해주세요.")
         else:
             _render_main_page()
+    elif mode == "🧬 100차원":
+        if v2_run and audio_file:
+            _run_100dim_analysis(audio_file, v2_name)
+        elif v2_run:
+            st.warning("음원 파일을 업로드해주세요.")
+        else:
+            _render_100dim_intro()
     elif mode == "🎵 톤 조합":
         _render_combination_page()
     else:
