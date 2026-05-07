@@ -141,7 +141,7 @@ def download_video(url: str, output_dir: Optional[Path] = None) -> DownloadResul
     audio_src_name = f"{safe_name}_audio"
     audio_src = out_dir / f"{audio_src_name}.m4a"
     base_opts_audio = {
-        "format": "bestaudio[ext=m4a]/bestaudio",
+        "format": "bestaudio/best",
         "outtmpl": str(audio_src),
         "noplaylist": True,
         "quiet": True,
@@ -248,7 +248,7 @@ def download_audio_only(url: str, output_dir: Optional[Path] = None) -> Download
     audio_src = out_dir / f"{tmp_name}.%(ext)s"
 
     base_opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio",
+        "format": "bestaudio/best",
         "outtmpl": str(audio_src),
         "noplaylist": True,
         "quiet": True,
