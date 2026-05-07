@@ -1,7 +1,15 @@
 """idol_screener/video_analyzer.py — 영상 기반 고유성 지표 3개 측정"""
 import numpy as np
-import cv2
 from pathlib import Path
+
+# cv2는 lazy import — 패키지 초기화 시 로딩 실패 방지
+cv2 = None
+def _ensure_cv2():
+    global cv2
+    if cv2 is None:
+        import cv2 as _cv2
+        cv2 = _cv2
+    return cv2
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
 from .config import (FRAME_SAMPLE_FPS, POSE_MIN_DETECTION_CONFIDENCE, POSE_MIN_TRACKING_CONFIDENCE,
@@ -77,6 +85,11 @@ def analyze_video(video_path: Path, content_type: str = "dance_video") -> VideoA
     result = VideoAnalysisResult()
     if not MP_AVAILABLE:
         result.error = "mediapipe.solutions 사용 불가 (Python 3.14 호환성 문제). 영상 분석을 건너뜁니다."
+        return result
+    try:
+        _ensure_cv2()
+    except ImportError as e:
+        result.error = f"cv2 로드 실패: {e}. 영상 분석을 건너뜁니다."
         return result
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
