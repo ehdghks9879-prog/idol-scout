@@ -1286,25 +1286,17 @@ def _render_100dim_intro():
 
 def _run_100dim_analysis(url: str, artist_name: str):
     """100차원 분석 실행 (URL → 다운로드 → 측정 → 렌더링)"""
-    from idol_scout.screener.downloader import download_video
+    from idol_scout.screener.downloader import download_audio_only
 
-    # 1) URL에서 오디오 다운로드
-    with st.spinner("📥 영상 다운로드 중..."):
-        dl = download_video(url)
+    # 1) URL에서 오디오만 다운로드 (영상 불필요 — 속도 최적화)
+    with st.spinner("📥 오디오 다운로드 중..."):
+        dl = download_audio_only(url)
 
     if not dl.success:
         st.error(f"❌ 다운로드 실패: {dl.error}")
         return
 
-    # 오디오 경로 결정 (downloader가 추출한 audio 또는 video에서 변환)
     audio_path = dl.audio_path
-    if not audio_path or not audio_path.exists():
-        # video에서 오디오 추출 시도
-        if dl.video_path and dl.video_path.exists():
-            with st.spinner("🎵 오디오 추출 중..."):
-                from idol_scout.screener.orchestrator import _extract_audio_from_video
-                audio_path = _extract_audio_from_video(dl.video_path)
-
     if not audio_path or not audio_path.exists():
         st.error("❌ 오디오를 추출할 수 없습니다. 다른 URL을 시도해주세요.")
         return
@@ -1327,11 +1319,9 @@ def _run_100dim_analysis(url: str, artist_name: str):
     finally:
         # 임시 다운로드 파일 정리
         try:
-            if dl.video_path and dl.video_path.exists():
-                dl.video_path.unlink()
             if dl.audio_path and dl.audio_path.exists():
                 dl.audio_path.unlink()
-            if audio_path and audio_path.exists():
+            if audio_path and audio_path != dl.audio_path and audio_path.exists():
                 audio_path.unlink()
         except Exception:
             pass
