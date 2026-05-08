@@ -1,0 +1,6 @@
+# 이 폴더에 다음 PNG 파일들을 업로드하세요:
+# - concept_4member_tone.png
+# - concept_11var_radar.png
+# - concept_hwasa_vs_wheein.png
+#
+# 생성 방법: code/phase2/visualizers.py의 generate_full_report() 함수 사용
