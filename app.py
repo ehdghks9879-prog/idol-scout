@@ -1,6 +1,6 @@
 """
-idol_scout — Streamlit 웹앱 v4.0
-극단값 탐지 패러다임 · 100차원 보컬 벡터 · 쉬운 언어
+idol_scout — Streamlit 웹앱 v4.1
+극단값 탐지 패러다임 · 100차원 보컬 벡터 · 쉬운 언어 · 프로젝트 정보 페이지 통합
 """
 
 import streamlit as st
@@ -11,6 +11,8 @@ from datetime import datetime
 from itertools import combinations
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+from project_info_pages import render_project_info_pages
 
 st.set_page_config(page_title="idol_scout", page_icon="🎤", layout="wide", initial_sidebar_state="expanded")
 
@@ -1711,7 +1713,7 @@ def main():
         st.caption("AI 아이돌 원석 발굴")
         st.divider()
 
-        mode = st.radio("", ["🔍 새 분석", "📂 지난 분석", "🎵 톤 조합", "🧬 100차원"], label_visibility="collapsed")
+        mode = st.radio("", ["🔍 새 분석", "📂 지난 분석", "🎵 톤 조합", "🧬 100차원", "📚 프로젝트 정보"], label_visibility="collapsed")
 
         if mode == "🔍 새 분석":
             url = st.text_input("영상 주소", placeholder="YouTube 또는 Instagram URL")
@@ -1764,6 +1766,8 @@ def main():
             _render_100dim_intro()
     elif mode == "🎵 톤 조합":
         _render_combination_page()
+    elif mode == "📚 프로젝트 정보":
+        render_project_info_pages()
     else:
         reports = load_reports()
         if not reports:
