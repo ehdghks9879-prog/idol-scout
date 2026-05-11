@@ -383,6 +383,7 @@ def render_project_info_pages():
         "정보 페이지",
         [
             "Overview",
+            "테스트 가이드",
             "회사 헌법",
             "7주 로드맵",
             "휘인 정밀 분석",
@@ -397,6 +398,8 @@ def render_project_info_pages():
 
     if sub_page == "Overview":
         _show_overview()
+    elif sub_page == "테스트 가이드":
+        _show_test_guide()
     elif sub_page == "회사 헌법":
         _show_constitution()
     elif sub_page == "7주 로드맵":
@@ -515,7 +518,141 @@ def _show_overview():
 
 
 # ============================================================
-# 2. 회사 헌법
+# 2. 테스트 가이드 (음원 없이 1차 모델 검증)
+# ============================================================
+
+def _show_test_guide():
+    st.markdown("""
+    <div class="ip-hero">
+        <div class="ip-hero-eyebrow">QUICK START — V1 SELF-TEST</div>
+        <div class="ip-hero-title">1차 모델 테스트 가이드</div>
+        <div class="ip-hero-subtitle">
+            RBW 음원 도착 전에도 공개 음원으로 즉시 시스템 검증 가능. 5단계로 끝.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="ip-quote">
+        <div class="ip-quote-label">왜 음원 없이도 가능한가</div>
+        <div class="ip-quote-text">
+            YouTube URL 한 줄만 있으면 자동으로 음원 다운로드 → 보컬 분리 → 분석이 끝납니다.
+            <span style="color:var(--accent-wheein); font-weight:600;">휘인·화사의 공개 솔로곡 URL</span>로
+            시스템이 마마무 4인을 정확히 4사분면으로 분류하는지 즉시 확인 가능합니다.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="ip-section-label">테스트 흐름 — 5 STEPS</div>', unsafe_allow_html=True)
+
+    steps = [
+        ("01", "YouTube에서 음원 URL 복사", "휘인·화사 등 마마무 4인의 솔로곡 또는 단독 무대 영상"),
+        ("02", "사이드바 메뉴 → 🔍 새 분석", "URL 붙여넣고 영상 유형 선택 (자동감지 권장)"),
+        ("03", "분석 시작 ▶ 클릭", "1~2분 자동 처리 (다운로드 → 보컬 분리 → 측정 → 판정)"),
+        ("04", "결과 확인", "톤 4사분면 자동 분류 + 보컬 세부 지표 + 100차원 매핑 + 극단값 판정"),
+        ("05", "여러 명 분석 후 → 🎵 톤 조합", "4명 모두 분석하면 마마무처럼 4사분면 다 채우는지 자동 검증"),
+    ]
+    for num, title, desc in steps:
+        st.markdown(f"""
+        <div class="ip-card">
+            <div style="display:flex; align-items:flex-start; gap:1.3rem;">
+                <div style="color:var(--accent-wheein); font-size:0.85rem; font-weight:700; letter-spacing:0.05em; padding-top:3px; min-width:1.8rem;">{num}</div>
+                <div style="flex:1;">
+                    <div style="color:var(--text-primary); font-size:1rem; font-weight:600; margin-bottom:0.3rem;">{title}</div>
+                    <div class="ip-body" style="font-size:0.88rem;">{desc}</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<div class="ip-section-label" style="margin-top:2.5rem;">추천 테스트 음원</div>', unsafe_allow_html=True)
+
+    test_audio = [
+        ("휘인", "EASY · Bouncy 등 솔로곡", "따뜻", "골드 스탠다드 — 가장 먼저 테스트 권장"),
+        ("화사", "Maria · Twit 등 솔로곡", "묵직", "강한 정점 — 시스템이 명백한 outlier 잡는지 확인"),
+        ("솔라", "Spit it Out · 7080 등", "청량", "고음 폭발형 — 메탈릭 광택 측정"),
+        ("문별", "Eclipse · Selfish 등", "건조", "보이쉬·저음 받침 — 4사분면 균형 완성"),
+    ]
+
+    rows_html = """
+    <table class="ip-table">
+        <thead>
+            <tr>
+                <th style="width:14%;">멤버</th>
+                <th style="width:30%;">추천 곡</th>
+                <th style="width:18%;">예상 분류</th>
+                <th>테스트 의의</th>
+            </tr>
+        </thead>
+        <tbody>
+    """
+    for name, songs, tone, meaning in test_audio:
+        rows_html += f"""
+        <tr>
+            <td style="color:var(--accent-wheein); font-weight:600;">{name}</td>
+            <td class="ip-table-cell-muted">{songs}</td>
+            <td><span class="ip-pill ip-pill-active">{tone}</span></td>
+            <td class="ip-table-cell-muted">{meaning}</td>
+        </tr>
+        """
+    rows_html += "</tbody></table>"
+    st.markdown(f'<div class="ip-card" style="padding:0.5rem 1.5rem;">{rows_html}</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="ip-section-label" style="margin-top:2.5rem;">검증 포인트 — 자동 검증되는 것</div>', unsafe_allow_html=True)
+
+    checks = [
+        ("톤 4사분면 분류 정확성", "휘인 → 따뜻, 화사 → 묵직, 솔라 → 청량, 문별 → 건조로 정확히 분류되는가"),
+        ("보컬 세부 지표 7종", "비브라토 · 다이내믹 · 호흡성 · 어택 · 음역대 · 성역대 · 공명 패턴 측정값"),
+        ("6개 핵심 지표", "음색 고유성 · 판별력 · 리듬 인격 · 동작 식별도 · 비주얼 잔상 · 표정 시그니처"),
+        ("11변수 자동 해석", "AI 측정 6개 (SDI·EDT·CER·RMC·CDR·EDI) + 인간 관찰 5개"),
+        ("실패 위험 진단", "NCPS (그룹 매몰형) + RNCS (역량 분산형) 10개 조건 점검"),
+        ("OR 극단값 판정", "차원별 독립 판정 — 종합 점수 없음 (회사 헌법 정합)"),
+    ]
+    for title, desc in checks:
+        st.markdown(f"""
+        <div class="ip-card-accent">
+            <div style="color:var(--text-primary); font-weight:600; margin-bottom:0.3rem;">{title}</div>
+            <div class="ip-body" style="font-size:0.88rem;">{desc}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<div class="ip-section-label" style="margin-top:2.5rem;">예상 결과 — 시스템 정합성 판정</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="ip-card">
+        <div class="ip-body" style="font-size:0.95rem; line-height:1.8;">
+            <span class="ip-body-emphasis">PASS 신호 (시스템 정합)</span><br>
+            마마무 4인이 자동으로 4사분면에 정확히 분류됨 → 톤 4사분면 가설이 시스템상 검증됨<br>
+            휘인이 "따뜻" 사분면에서 비브라토·호흡성 등 미묘한 지표에서 outlier로 잡힘<br>
+            화사가 흉성 비율·다이내믹 범위에서 명백한 outlier로 잡힘
+            <hr style="border-color:var(--border-subtle); margin:1rem 0;">
+            <span class="ip-body-emphasis">FAIL 신호 (알고리즘 보강 필요)</span><br>
+            4인이 4사분면에 골고루 분류되지 않거나, 동일 사분면에 몰림<br>
+            휘인의 미묘한 특성이 평범 보컬과 구분 안 됨<br>
+            → 이 경우 알고리즘 정밀화 또는 DDSP 조기 도입 필요
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="ip-section-label" style="margin-top:2.5rem;">테스트 시 주의사항</div>', unsafe_allow_html=True)
+
+    notes = [
+        ("MR 섞인 무대 영상은 정확도 낮음", "가능하면 어쿠스틱·라이브 솔로 또는 보컬 컨디션 영상 우선"),
+        ("다인원 영상 자동 감지됨", "마마무 그룹곡 4인 동시 영상은 자동으로 '다인원' 경고 → 개별 영상 사용"),
+        ("결과는 절대 점수가 아님", "차원별 독립 판정 — \"이 사람이 OO에서 남다른가\"를 봄. 종합 순위 표시 X"),
+        ("RBW 음원과의 차이", "공개 음원은 후처리·이펙트가 섞여 있어 정확도 약함. RBW 마스터는 차원이 다름"),
+    ]
+    for title, desc in notes:
+        st.markdown(f"""
+        <div class="ip-card">
+            <div style="color:var(--text-primary); font-weight:600; margin-bottom:0.3rem;">{title}</div>
+            <div class="ip-body" style="font-size:0.88rem;">{desc}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ============================================================
+# 3. 회사 헌법
 # ============================================================
 
 def _show_constitution():
