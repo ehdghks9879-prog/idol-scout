@@ -2009,38 +2009,36 @@ def render_result():
     celebs = result['celeb_matches']
     # 유사도 높은 순 정렬
     celebs_sorted = sorted(celebs, key=lambda m: m.get('similarity', 0), reverse=True)
+    # 들여쓰기 없는 한 줄 HTML로 작성 — markdown이 들여쓰기를 code-block으로 잘못 인식하는 것 방지
     celeb_cards_html = ""
     for m in celebs_sorted:
         sim = m.get('similarity', 0)
         bar_width = max(2, int(sim))
         code = m.get('code', '')
-        celeb_cards_html += f"""
-        <div class="v2-celeb-card">
-            <div class="v2-celeb-row">
-                <div>
-                    <span class="v2-celeb-name">{m['name']}</span>
-                    <span class="v2-celeb-code">· {code}</span>
-                </div>
-                <div class="v2-celeb-percent">{sim:.0f}%</div>
-            </div>
-            <div class="v2-celeb-track">
-                <div class="v2-celeb-fill" style="width:{bar_width}%;"></div>
-            </div>
-        </div>
-        """
+        name = m.get('name', '')
+        celeb_cards_html += (
+            f'<div class="v2-celeb-card">'
+            f'<div class="v2-celeb-row">'
+            f'<div><span class="v2-celeb-name">{name}</span>'
+            f'<span class="v2-celeb-code">· {code}</span></div>'
+            f'<div class="v2-celeb-percent">{sim:.0f}%</div>'
+            f'</div>'
+            f'<div class="v2-celeb-track">'
+            f'<div class="v2-celeb-fill" style="width:{bar_width}%;"></div>'
+            f'</div>'
+            f'</div>'
+        )
 
-    st.markdown(f"""
-    <div class="v2-frame" style="padding-top:2.5rem; padding-bottom:2.5rem;">
-        <div class="v2-frame-number">FRAME 4 / 5 · CELEBRITY MATCH</div>
-        <div class="v2-frame-title" style="margin-bottom:1.8rem;">가장 닮은 보컬</div>
-        <div style="width:100%; max-width:460px;">
-            {celeb_cards_html}
-        </div>
-        <div class="v2-frame-body" style="margin-top:1.6rem; font-size:0.88rem; color:var(--text-tertiary);">
-            마마무 4인 톤 4사분면 기준 거리 측정
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    frame4_html = (
+        f'<div class="v2-frame" style="padding-top:2.5rem; padding-bottom:2.5rem;">'
+        f'<div class="v2-frame-number">FRAME 4 / 5 · CELEBRITY MATCH</div>'
+        f'<div class="v2-frame-title" style="margin-bottom:1.8rem;">가장 닮은 보컬</div>'
+        f'<div style="width:100%; max-width:460px;">{celeb_cards_html}</div>'
+        f'<div class="v2-frame-body" style="margin-top:1.6rem; font-size:0.88rem; color:var(--text-tertiary);">'
+        f'마마무 4인 톤 4사분면 기준 거리 측정</div>'
+        f'</div>'
+    )
+    st.markdown(frame4_html, unsafe_allow_html=True)
 
     # ── Frame 5: 감정 트리거 ──
     st.markdown(f"""
