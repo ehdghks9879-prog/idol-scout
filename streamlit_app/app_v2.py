@@ -2855,6 +2855,38 @@ def render_admin_references():
 
     st.markdown("---")
 
+    # ─ JSON 내보내기 (영구 보존용) ─
+    st.markdown("### 📥 JSON 내보내기 (영구 저장)")
+    st.caption(
+        "Streamlit Cloud는 재부팅 시 업로드 파일이 휘발됩니다. "
+        "아래 JSON을 다운로드 → 리포 `code/v2/mamamoo_references.json`에 복사 후 GitHub 푸시하면 영구 보존됩니다."
+    )
+
+    if not library.is_empty():
+        import json as _json
+        export_data = {
+            "references": {name: vec.tolist() for name, vec in library.references.items()},
+            "sample_counts": getattr(library, "_sample_counts", {name: 1 for name in library.references}),
+        }
+        json_str = _json.dumps(export_data, indent=2, ensure_ascii=False)
+        st.download_button(
+            label="📥 mamamoo_references.json 다운로드",
+            data=json_str,
+            file_name="mamamoo_references.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+        st.caption(
+            "다운로드 후:\n"
+            "1. 파일을 `C:\\Users\\dkdak\\Documents\\idol_scout\\code\\v2\\mamamoo_references.json` 으로 복사\n"
+            "2. GitHub Desktop → Commit + Push\n"
+            "3. Streamlit Cloud 자동 재배포 → 영구 보존"
+        )
+    else:
+        st.info("먼저 멤버 레퍼런스를 등록한 뒤 내보내기 가능합니다.")
+
+    st.markdown("---")
+
     # 메인 앱으로 돌아가기
     if st.button("← 메인 앱으로", use_container_width=True, type="secondary"):
         st.query_params.clear()
