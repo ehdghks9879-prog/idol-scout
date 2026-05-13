@@ -139,81 +139,143 @@ def measure_weight(measurements: Dict) -> float:
     """
     축 2: Tone Weight (Warm vs Dry).
 
+    v2.2 개선:
+    - F3 위치 정밀 활용 (Parselmouth)
+    - F2/F1 비율로 구강 형태 추정
+
     근거:
     - 비강 공명 비율 높음 = 따뜻 (Warm)
-    - 호흡성(breathiness) 높음 = 따뜻
-    - HNR 낮음 + harmonic 안정 = 따뜻
-    - F3 위치 높음 + 건조한 발성 = Dry
+    - 호흡성 높음 = 따뜻
+    - F3 낮음 (~2400Hz 아래) = 따뜻
+    - F2/F1 비율 낮음 = 어두운/따뜻
     """
     factors = []
+    weights = []
 
-    # 비강 공명 (높을수록 따뜻 = 0 방향)
+    # 1. 비강 공명 (높을수록 Warm = 0 방향)
     nasal = measurements.get("nasal_resonance_ratio", 0.5)
     factors.append(1.0 - nasal)
+    weights.append(1.2)
 
-    # 호흡성 (높을수록 따뜻)
+    # 2. 호흡성 (높을수록 Warm)
     breathiness = measurements.get("breathiness", 0.5)
     factors.append(1.0 - breathiness)
+    weights.append(0.8)
 
-    # HNR (높을수록 깨끗 → Dry 쪽)
+    # 3. HNR (높을수록 Dry)
     hnr = measurements.get("hnr_db", 20)
     factors.append(np.clip((hnr - 15) / 15, 0, 1))
+    weights.append(0.7)
 
-    return float(np.mean(factors)) if factors else 0.5
+    # 4. F3 위치 (있을 때 — Parselmouth) — 낮으면 Warm
+    f3 = measurements.get("formant_3_hz", None)
+    if f3 is not None:
+        # F3: 2400Hz=Warm, 3200Hz=Dry
+        factors.append(np.clip((f3 - 2400) / 800, 0, 1))
+        weights.append(1.0)
+
+    if factors:
+        return float(np.average(factors, weights=weights))
+    return 0.5
 
 
 def measure_direction(measurements: Dict) -> float:
     """
     축 3: Energy Direction (Outward vs Inward).
 
+    v2.2 개선: MR 제거 음원의 압축 다이내믹스 강건성
+    - Jitter/Shimmer (Parselmouth)로 발성 강도 추정
+    - HNR로 발성 압력 추정
+    - 압축된 음원에서도 측정 가능한 지표 추가
+
     근거:
-    - Dynamic range 높음 = Outward (발산)
+    - Dynamic range 높음 = Outward
     - Attack 강함 = Outward
-    - Loudness 변화 크기 = Outward
-    - 다이내믹 부드러움 = Inward (점진적)
+    - Shimmer 높음 = 강한 발성 = Outward
+    - F1 위치 높음 (입 크게 벌림) = Outward
     """
     factors = []
+    weights = []
 
-    # Dynamic range (높을수록 Outward)
+    # 1. Dynamic range (낮은 임계값으로 조정 — MR 제거 음원 압축 고려)
     dyn_range = measurements.get("dynamic_range_db", 20)
-    factors.append(np.clip((dyn_range - 10) / 30, 0, 1))
+    factors.append(np.clip((dyn_range - 5) / 20, 0, 1))
+    weights.append(0.8)
 
-    # Attack sharpness (높을수록 Outward)
+    # 2. Attack sharpness
     attack = measurements.get("attack_sharpness", 0.5)
     factors.append(attack)
+    weights.append(1.0)
 
-    # Loudness smoothness (낮을수록 Outward)
+    # 3. Loudness smoothness (낮을수록 Outward)
     smoothness = measurements.get("loudness_smoothness", 0.5)
     factors.append(1.0 - smoothness)
+    weights.append(0.6)
 
-    return float(np.mean(factors)) if factors else 0.5
+    # 4. Shimmer (Parselmouth) — 높음 = 강한 발성 = Outward
+    shimmer = measurements.get("shimmer_local", None)
+    if shimmer is not None:
+        # 일반 0.01~0.10. 높을수록 Outward
+        factors.append(np.clip(shimmer * 15, 0, 1))
+        weights.append(1.2)  # 압축 음원에서도 신뢰 가능한 지표
+
+    # 5. F1 위치 (입 크게 벌리면 F1 높아짐, 700Hz 이상=Outward)
+    f1 = measurements.get("formant_1_hz", 600)
+    factors.append(np.clip((f1 - 500) / 400, 0, 1))
+    weights.append(0.7)
+
+    if factors:
+        return float(np.average(factors, weights=weights))
+    return 0.5
 
 
 def measure_style(measurements: Dict) -> float:
     """
     축 4: Expression Style (Peak vs Subtle).
 
+    v2.2 개선: 압축 음원 강건성
+    - Spectral energy variance (스펙트럼 변동성) 추가
+    - Jitter로 보컬 표현력 추정
+
     근거:
-    - 에너지 클라이맥스 구축력 높음 = Peak
-    - 에너지 변화율(1차미분) 높음 = Peak
-    - 에너지 엔트로피 낮음 = Peak (단일 클라이맥스에 집중)
-    - 점진적 빌드업 = Subtle (휘인형)
+    - 클라이맥스 구축력 높음 = Peak
+    - Jitter 높음 = 표현력 큼 = Peak
+    - HNR 낮음 = 거친 음색 = Peak
+    - 균등한 빌드업 = Subtle
     """
     factors = []
+    weights = []
 
-    # 클라이맥스 구축력
+    # 1. 클라이맥스 구축력
     climax = measurements.get("climax_building", 0.5)
     factors.append(climax)
+    weights.append(1.0)
 
-    # 에너지 변화율 (높을수록 Peak)
+    # 2. 에너지 변화율 (낮은 임계값)
     energy_change_rate = measurements.get("energy_change_rate", 0.5)
-    factors.append(energy_change_rate)
+    factors.append(np.clip(energy_change_rate * 1.5, 0, 1))
+    weights.append(0.8)
 
-    # 다이내믹 smoothness (낮을수록 Peak)
+    # 3. Loudness smoothness (낮을수록 Peak)
     smoothness = measurements.get("loudness_smoothness", 0.5)
     factors.append(1.0 - smoothness)
+    weights.append(0.6)
 
-    return float(np.mean(factors)) if factors else 0.5
+    # 4. Jitter (Parselmouth) — 높음 = 표현력 = Peak
+    jitter = measurements.get("jitter_local", None)
+    if jitter is not None:
+        # 일반 0.005~0.030. 높을수록 Peak
+        factors.append(np.clip(jitter * 35, 0, 1))
+        weights.append(1.0)
+
+    # 5. HNR — 낮음 = 거친 음색 = Peak (벨팅·샤우팅)
+    hnr = measurements.get("hnr_db", 20)
+    factors.append(np.clip(1.0 - (hnr - 5) / 25, 0, 1))
+    weights.append(0.9)
+
+    if factors:
+        return float(np.average(factors, weights=weights))
+    return 0.5
 
 
 # ============================================================
