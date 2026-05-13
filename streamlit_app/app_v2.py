@@ -2234,7 +2234,7 @@ def run_analysis(audio_data, audio_url, artist_name):
                       for m in result.celeb_matches]
             ),
             "embedding_used": embedding_used,
-            "uniqueness": result.uniqueness,  # 회사 헌법 핵심 지표
+            "uniqueness": getattr(result, 'uniqueness', None),  # 회사 헌법 핵심 지표 (구버전 호환)
             "outlier_high": result.outlier_high_dimensions,
             "outlier_low": result.outlier_low_dimensions,
             "frame_1": result.frame_1_attention,
