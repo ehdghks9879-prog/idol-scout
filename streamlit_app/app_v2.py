@@ -2787,11 +2787,17 @@ def render_admin_references():
     st.markdown("### 현재 등록 상태")
     members = ["솔라", "휘인", "화사", "문별"]
     cols = st.columns(4)
+    # vocal_embedder 신·구버전 호환 — get_sample_count 없으면 fallback
+    _get_count = getattr(library, "get_sample_count", None)
     for i, name in enumerate(members):
         with cols[i]:
-            count = library.get_sample_count(name)
+            if _get_count is not None:
+                count = _get_count(name)
+            else:
+                # 구버전 — 등록 여부만 확인
+                count = 1 if name in library.references else 0
             if count > 0:
-                status = f"✓ {count}곡 누적"
+                status = f"✓ {count}곡 누적" if _get_count else "✓ 등록됨"
                 color = "var(--accent)" if count >= 3 else "var(--accent-amber)"
             else:
                 status = "○ 미등록"
@@ -2829,8 +2835,9 @@ def render_admin_references():
             with st.spinner(f"{selected_member} 임베딩 추출 중..."):
                 audio_bytes = uploaded.getvalue()
                 embedding = extract_embedding(audio_bytes)
-                if mode.startswith("누적"):
-                    new_count = library.add_reference_sample(selected_member, embedding)
+                _add_sample = getattr(library, "add_reference_sample", None)
+                if mode.startswith("누적") and _add_sample is not None:
+                    new_count = _add_sample(selected_member, embedding)
                     library.save(DEFAULT_LIBRARY_PATH)
                     st.success(
                         f"✓ {selected_member} 레퍼런스 누적 완료. "
@@ -2838,9 +2845,10 @@ def render_admin_references():
                     )
                 else:
                     library.set_reference(selected_member, embedding)
-                    library._sample_counts[selected_member] = 1
+                    if hasattr(library, "_sample_counts"):
+                        library._sample_counts[selected_member] = 1
                     library.save(DEFAULT_LIBRARY_PATH)
-                    st.success(f"✓ {selected_member} 레퍼런스 단일 등록 완료.")
+                    st.success(f"✓ {selected_member} 레퍼런스 등록 완료.")
             st.rerun()
         except Exception as e:
             st.error(f"등록 실패: {e}")
