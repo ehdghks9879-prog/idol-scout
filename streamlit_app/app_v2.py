@@ -2234,6 +2234,7 @@ def run_analysis(audio_data, audio_url, artist_name):
                       for m in result.celeb_matches]
             ),
             "embedding_used": embedding_used,
+            "uniqueness": result.uniqueness,  # 회사 헌법 핵심 지표
             "outlier_high": result.outlier_high_dimensions,
             "outlier_low": result.outlier_low_dimensions,
             "frame_1": result.frame_1_attention,
@@ -2334,37 +2335,73 @@ def render_result():
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Frame 4: 셀럽 매칭 ──
-    celebs = result['celeb_matches']
-    # 유사도 높은 순 정렬
-    celebs_sorted = sorted(celebs, key=lambda m: m.get('similarity', 0), reverse=True)
-    # 들여쓰기 없는 한 줄 HTML로 작성 — markdown이 들여쓰기를 code-block으로 잘못 인식하는 것 방지
-    celeb_cards_html = ""
-    for m in celebs_sorted:
-        sim = m.get('similarity', 0)
-        bar_width = max(2, int(sim))
-        code = m.get('code', '')
-        name = m.get('name', '')
-        celeb_cards_html += (
-            f'<div class="v2-celeb-card">'
-            f'<div class="v2-celeb-row">'
-            f'<div><span class="v2-celeb-name">{name}</span>'
-            f'<span class="v2-celeb-code">· {code}</span></div>'
-            f'<div class="v2-celeb-percent">{sim:.0f}%</div>'
-            f'</div>'
-            f'<div class="v2-celeb-track">'
-            f'<div class="v2-celeb-fill" style="width:{bar_width}%;"></div>'
-            f'</div>'
+    # ── Frame 4: 고유성 측정 (회사 헌법 정합 — 닮음 아닌 다름이 가치) ──
+    uniqueness = result.get('uniqueness') or {}
+    u_score = uniqueness.get('score', 50)
+    u_tier = uniqueness.get('tier', '평범')
+    u_desc = uniqueness.get('tier_desc', '')
+    u_color_key = uniqueness.get('tier_color', 'medium')
+
+    # 영역별 색상
+    tier_color_map = {
+        "extreme": "#4fd1c5",     # 극히 희귀 — 청록 강조
+        "high": "#f4d35e",         # 독특 — 노랑
+        "medium": "#9aa1b3",       # 차별 가능 — 회색
+        "low": "#5e6577",          # 평범 — 진한 회색
+    }
+    u_color = tier_color_map.get(u_color_key, "#9aa1b3")
+
+    # 참고용 거리 (작게 표시) — 가장 가까운 가수 정보만
+    closest_member = uniqueness.get('closest_reference', '')
+    all_ref_distances = uniqueness.get('all_reference_distances', {})
+    # 거리 작은 순 정렬 (가장 가까움 = 가장 비슷 = 가치 낮음)
+    sorted_refs = sorted(all_ref_distances.items(), key=lambda kv: kv[1]) if all_ref_distances else []
+
+    ref_pills_html = ""
+    for name, dist in sorted_refs[:4]:
+        # 거리 0~1 → 차이도 0~100% (높을수록 다름 = 가치)
+        diff_pct = int(dist * 100)
+        ref_pills_html += (
+            f'<div style="display:flex; align-items:center; gap:0.6rem; padding:0.5rem 0.9rem; '
+            f'background:rgba(255,255,255,0.03); border-radius:100px; '
+            f'border:1px solid rgba(255,255,255,0.06);">'
+            f'<span style="color:var(--text-secondary); font-size:0.85rem;">{name}와의 차이</span>'
+            f'<span style="color:var(--text-tertiary); font-family:Space Grotesk; font-size:0.82rem;">{diff_pct}%</span>'
             f'</div>'
         )
 
     frame4_html = (
-        f'<div class="v2-frame" style="padding-top:2.5rem; padding-bottom:2.5rem;">'
-        f'<div class="v2-frame-number">FRAME 4 / 5 · CELEBRITY MATCH</div>'
-        f'<div class="v2-frame-title" style="margin-bottom:1.8rem;">가장 닮은 보컬</div>'
-        f'<div style="width:100%; max-width:460px;">{celeb_cards_html}</div>'
-        f'<div class="v2-frame-body" style="margin-top:1.6rem; font-size:0.88rem; color:var(--text-tertiary);">'
-        f'마마무 4인 톤 4사분면 기준 거리 측정</div>'
+        f'<div class="v2-frame" style="padding-top:2.8rem; padding-bottom:2.8rem;">'
+        f'<div class="v2-frame-number">FRAME 4 / 5 · UNIQUENESS</div>'
+        # 메인 — 고유성 점수
+        f'<div style="font-family:Space Grotesk; font-size:5.5rem; font-weight:800; '
+        f'color:{u_color}; line-height:1; margin:1.5rem 0 0.4rem; '
+        f'text-shadow:0 0 40px {u_color}55;">'
+        f'{int(u_score)}'
+        f'<span style="font-size:1.8rem; opacity:0.5;"> / 100</span>'
+        f'</div>'
+        # Tier 라벨
+        f'<div style="color:{u_color}; font-size:1.6rem; font-weight:700; '
+        f'letter-spacing:-0.02em; margin-bottom:0.8rem;">{u_tier}</div>'
+        # Tier 설명
+        f'<div class="v2-frame-body" style="font-size:0.98rem; max-width:480px; '
+        f'margin-bottom:1.8rem;">{u_desc}</div>'
+        # 참고 거리 (작게)
+        f'<div style="width:100%; max-width:520px; padding-top:1.4rem; '
+        f'border-top:1px solid rgba(255,255,255,0.06); margin-top:0.5rem;">'
+        f'<div style="color:var(--text-tertiary); font-size:0.78rem; '
+        f'letter-spacing:0.08em; text-transform:uppercase; margin-bottom:0.8rem;">'
+        f'참고 · 기존 가수와의 거리</div>'
+        f'<div style="display:flex; flex-wrap:wrap; gap:0.5rem; justify-content:center;">'
+        f'{ref_pills_html}'
+        f'</div>'
+        f'<div style="margin-top:1rem; color:var(--text-tertiary); font-size:0.78rem; '
+        f'line-height:1.6; opacity:0.8;">'
+        f'※ 차이 클수록 기존 가수와 다른 영역 = 발굴 가치 ↑<br>'
+        f'※ 본 시스템은 닮은 보컬이 아니라 <b style="color:var(--accent);">'
+        f'기존에 없는 보컬</b>을 찾습니다 (회사 헌법)'
+        f'</div>'
+        f'</div>'
         f'</div>'
     )
     st.markdown(frame4_html, unsafe_allow_html=True)
@@ -2442,6 +2479,55 @@ def render_deep():
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── 고유성 점수 (회사 헌법 핵심 — 닮음 아닌 다름이 가치) ──
+    uniqueness = result.get('uniqueness') or {}
+    if uniqueness:
+        u_score = uniqueness.get('score', 50)
+        u_tier = uniqueness.get('tier', '평범')
+        u_color_key = uniqueness.get('tier_color', 'medium')
+        tier_color_map = {
+            "extreme": "#4fd1c5", "high": "#f4d35e",
+            "medium": "#9aa1b3", "low": "#5e6577",
+        }
+        u_color = tier_color_map.get(u_color_key, "#9aa1b3")
+        axis_ext = uniqueness.get('axis_extremeness', 0) * 100
+        avg_ext = uniqueness.get('avg_extremeness', 0) * 100
+        min_dist = uniqueness.get('min_reference_distance', 0) * 100
+        avg_dist = uniqueness.get('avg_reference_distance', 0) * 100
+
+        # 단순 들여쓰기 없는 한 줄 HTML로 마크다운 코드블록 방지
+        uniq_html = (
+            f'<div class="v2-deep-section" style="border-left:3px solid {u_color};">'
+            f'<div class="v2-deep-label" style="color:{u_color};">UNIQUENESS · 회사 헌법 핵심 지표</div>'
+            f'<div class="v2-deep-title">고유성 점수 — 기존 가수와 얼마나 다른가</div>'
+            f'<div style="display:flex; align-items:baseline; gap:1.2rem; margin:1rem 0;">'
+            f'<div style="font-family:Space Grotesk; font-size:4rem; font-weight:800; color:{u_color}; line-height:1;">'
+            f'{int(u_score)}<span style="font-size:1.5rem; opacity:0.5;"> / 100</span>'
+            f'</div>'
+            f'<div style="color:{u_color}; font-size:1.4rem; font-weight:700;">{u_tier}</div>'
+            f'</div>'
+            f'<table class="v2-table" style="margin-top:1.2rem;">'
+            f'<thead><tr><th>구성 요소</th><th>값</th><th>해석</th></tr></thead><tbody>'
+            f'<tr><td>축 극단성 (max)</td><td style="color:{u_color}; font-weight:600;">{axis_ext:.0f}%</td>'
+            f'<td>가장 극단적인 한 축의 평균 이탈도 (회사 헌법 OR 논리)</td></tr>'
+            f'<tr><td>축 극단성 (avg)</td><td>{avg_ext:.0f}%</td>'
+            f'<td>4축 평균 극단성</td></tr>'
+            f'<tr><td>최단 레퍼런스 거리</td><td style="color:{u_color}; font-weight:600;">{min_dist:.0f}%</td>'
+            f'<td>가장 가까운 기존 가수와의 차이 (클수록 차별)</td></tr>'
+            f'<tr><td>평균 레퍼런스 거리</td><td>{avg_dist:.0f}%</td>'
+            f'<td>마마무 4인 평균 차이</td></tr>'
+            f'</tbody></table>'
+            f'<div style="margin-top:1.2rem; padding:1rem; background:rgba(42,157,143,0.06); '
+            f'border-radius:12px; color:var(--text-secondary); font-size:0.88rem; line-height:1.6;">'
+            f'<b style="color:var(--accent);">시스템 철학:</b> '
+            f'본 시스템은 기존 가수와 닮은 보컬을 우대하지 않습니다. '
+            f'오히려 <b style="color:{u_color};">기존 가수에 없는 영역에 있는 보컬</b>이 '
+            f'캐스팅 가치가 높다고 판단합니다. 닮음 = 템플릿 복사, 다름 = 새로운 천재 가능성.'
+            f'</div>'
+            f'</div>'
+        )
+        st.markdown(uniq_html, unsafe_allow_html=True)
 
     # ── 4축 점수 표 ──
     st.markdown('<div class="v2-deep-section">', unsafe_allow_html=True)

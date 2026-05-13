@@ -337,6 +337,9 @@ class VocalMBTIResult:
     outlier_high_dimensions: List[str] = field(default_factory=list)
     outlier_low_dimensions: List[str] = field(default_factory=list)
 
+    # 고유성 점수 (회사 헌법 핵심 — 닮음이 아닌 다름이 가치)
+    uniqueness: Optional[Dict] = None
+
     # 신뢰도 메타데이터
     confidence: float = 1.0
     measurements_count: int = 0
@@ -378,11 +381,19 @@ def compute_celeb_matches(scores: AxisScores) -> List[CelebMatch]:
 def generate_frame_messages(
     result: VocalMBTIResult, has_outlier: bool
 ) -> None:
-    """결과에 5프레임 메시지 자동 생성."""
+    """결과에 5프레임 메시지 자동 생성. 고유성(uniqueness) 중심으로 톤 정렬."""
 
-    # Frame 1 — 주의 환기
-    if has_outlier:
-        result.frame_1_attention = "당신의 목소리에 남들과 다른 점이 있습니다"
+    # 고유성 점수 활용
+    u = result.uniqueness or {}
+    u_score = u.get("score", 50)
+
+    # Frame 1 — 주의 환기 (고유성 기반)
+    if u_score >= 80:
+        result.frame_1_attention = "기존 K-POP에서 보기 힘든 영역의 목소리입니다"
+    elif u_score >= 60:
+        result.frame_1_attention = "당신의 목소리에 남다른 점이 있습니다"
+    elif has_outlier:
+        result.frame_1_attention = "일부 차원에서 outlier가 감지됐습니다"
     else:
         result.frame_1_attention = "당신의 목소리를 분석했습니다"
 
@@ -403,25 +414,134 @@ def generate_frame_messages(
     else:
         result.frame_3_rarity = "이 타입 안에서 평균 범위"
 
-    # Frame 4 — 셀럽 매칭
-    if result.celeb_matches:
-        top = result.celeb_matches[0]
+    # Frame 4 — 고유성 (닮음이 아닌 다름 강조)
+    closest = u.get("closest_reference", "")
+    min_dist = u.get("min_reference_distance", 0)
+    if u_score >= 80:
         result.frame_4_celeb = (
-            f"가장 닮은 보컬: {top.name} ({top.similarity_percent:.0f}%)\n"
-            f"({top.code} — {MAMAMOO_REFERENCE[top.name]['description']})"
+            f"기존 가수 영역 밖 — 발굴 가치 매우 높음\n"
+            f"가장 가까운 기존 가수도 {int(min_dist*100)}% 다름"
+        )
+    elif u_score >= 60:
+        result.frame_4_celeb = (
+            f"독특한 영역 — {closest}와도 {int(min_dist*100)}% 차이"
+        )
+    else:
+        result.frame_4_celeb = (
+            f"기존 가수와 유사 영역 — 가장 가까움: {closest}\n"
+            f"차별화 가능 차원 추가 검토 필요"
         )
 
-    # Frame 5 — 감정 트리거 (코드별)
-    emotional_msgs = {
-        "BWOP": "당신의 목소리는 청량한 햇살처럼 외향적으로 빛납니다",
-        "BWIS": "당신의 목소리는 따뜻한 속삭임처럼 사람을 끌어들입니다",
-        "DWOP": "당신의 목소리는 깊은 흉성으로 공간을 압도합니다",
-        "BRIS": "당신의 목소리는 건조하고 보이쉬한 매력으로 받침이 됩니다",
+    # Frame 5 — 감정 트리거 (고유성 톤 정렬)
+    if u_score >= 80:
+        result.frame_5_emotional = (
+            f"기존 K-POP에 없던 새로운 영역. {result.code} 유형의 진짜 신선함."
+        )
+    elif u_score >= 60:
+        result.frame_5_emotional = (
+            f"당신의 보컬은 {result.code} 유형 안에서도 독특한 색을 갖고 있습니다"
+        )
+    else:
+        emotional_msgs = {
+            "BWOP": "청량한 햇살의 외향성. 기존 솔라형 영역",
+            "BWIS": "따뜻한 속삭임의 정밀. 기존 휘인형 영역",
+            "DWOP": "깊은 흉성의 압도력. 기존 화사형 영역",
+            "BRIS": "건조하고 보이쉬. 기존 문별형 영역",
+        }
+        result.frame_5_emotional = emotional_msgs.get(
+            result.code,
+            f"{result.code} 유형 — 기존 영역과의 차별점 추가 검토 필요"
+        )
+
+
+# ============================================================
+# 6.5. 고유성 점수 — 회사 헌법 정합 핵심 지표
+# ============================================================
+
+def compute_uniqueness(scores: AxisScores) -> Dict:
+    """기존 K-POP 가수와 얼마나 다른가 = 고유성 점수.
+
+    회사 헌법:
+    - 닮음 = 템플릿 복사 = 캐스팅 가치 낮음
+    - 다름 = 새로운 천재 가능성 = 캐스팅 가치 높음
+
+    계산:
+        1. 축 극단성 (max |axis - 0.5|) — OR 논리 (한 차원이라도 극단)
+        2. 마마무 4인과의 평균 거리 (4축 공간 유클리드)
+        3. 마마무 4인 중 최단 거리 (가장 가까운 가수와도 멀면 진짜 outlier)
+
+    Returns:
+        {
+            "score": 0~100 (고유성 점수),
+            "tier": str (영역 분류),
+            "axis_extremeness": float,
+            "min_reference_distance": float,
+            "avg_reference_distance": float,
+            "closest_reference": str,
+        }
+    """
+    # 1. 축 극단성 — OR 논리 (가장 극단적인 축이 가치)
+    axis_distances_from_center = [
+        abs(scores.brightness - 0.5),
+        abs(scores.weight - 0.5),
+        abs(scores.direction - 0.5),
+        abs(scores.style - 0.5),
+    ]
+    max_extremeness = max(axis_distances_from_center) * 2  # 0~1
+    avg_extremeness = (sum(axis_distances_from_center) / 4) * 2  # 0~1
+
+    # 2. 마마무 4인과의 거리 (4축 유클리드 공간)
+    ref_distances = {}
+    for name, ref in MAMAMOO_REFERENCE.items():
+        dist = np.sqrt(
+            (scores.brightness - ref["brightness"]) ** 2 +
+            (scores.weight - ref["weight"]) ** 2 +
+            (scores.direction - ref["direction"]) ** 2 +
+            (scores.style - ref["style"]) ** 2
+        )
+        # 최대 거리 = sqrt(4) = 2, 정규화 0~1
+        ref_distances[name] = float(dist / 2.0)
+
+    min_dist = min(ref_distances.values())
+    avg_dist = sum(ref_distances.values()) / len(ref_distances)
+    closest_member = min(ref_distances, key=ref_distances.get)
+
+    # 3. 종합 고유성 점수
+    # - 축 극단성 50% (얼마나 평범하지 않은가)
+    # - 레퍼런스로부터 거리 50% (얼마나 기존 가수와 다른가)
+    uniqueness_raw = (max_extremeness * 0.5) + (min_dist * 0.5)
+    uniqueness_score = float(np.clip(uniqueness_raw * 100, 0, 100))
+
+    # 4. 영역 분류
+    if uniqueness_score >= 80:
+        tier = "극히 희귀"
+        tier_desc = "기존 K-POP에서 거의 볼 수 없는 영역. 발굴 가치 매우 높음"
+        tier_color = "extreme"
+    elif uniqueness_score >= 60:
+        tier = "독특"
+        tier_desc = "기존 가수들과 뚜렷이 구별되는 영역. 추가 검토 가치"
+        tier_color = "high"
+    elif uniqueness_score >= 40:
+        tier = "차별 가능"
+        tier_desc = "일부 차원에서 차별점 존재. 잠재력 있음"
+        tier_color = "medium"
+    else:
+        tier = "평범"
+        tier_desc = "기존 K-POP 가수와 유사 영역. 차별화 어려움"
+        tier_color = "low"
+
+    return {
+        "score": uniqueness_score,
+        "tier": tier,
+        "tier_desc": tier_desc,
+        "tier_color": tier_color,
+        "axis_extremeness": float(max_extremeness),
+        "avg_extremeness": float(avg_extremeness),
+        "min_reference_distance": min_dist,
+        "avg_reference_distance": avg_dist,
+        "closest_reference": closest_member,
+        "all_reference_distances": ref_distances,
     }
-    result.frame_5_emotional = emotional_msgs.get(
-        result.code,
-        f"당신의 목소리는 {result.code} 유형의 고유한 매력을 가졌습니다"
-    )
 
 
 # ============================================================
@@ -475,6 +595,9 @@ def analyze_vocal_mbti(
     out_low = outlier_low or []
     has_outlier = len(out_high) + len(out_low) > 0
 
+    # 고유성 점수 계산 (회사 헌법 핵심 지표)
+    uniqueness = compute_uniqueness(scores)
+
     result = VocalMBTIResult(
         axis_scores=scores,
         code=code,
@@ -483,6 +606,7 @@ def analyze_vocal_mbti(
         celeb_matches=celeb_matches,
         outlier_high_dimensions=out_high,
         outlier_low_dimensions=out_low,
+        uniqueness=uniqueness,
         measurements_count=len(measurements),
     )
 
