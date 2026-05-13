@@ -2335,31 +2335,26 @@ def render_result():
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Frame 4: 고유성 측정 (회사 헌법 정합 — 닮음 아닌 다름이 가치) ──
+    # ── Frame 4: 고유성 + 검증 (두 지표 병행) ──
     uniqueness = result.get('uniqueness') or {}
     u_score = uniqueness.get('score', 50)
     u_tier = uniqueness.get('tier', '평범')
     u_desc = uniqueness.get('tier_desc', '')
     u_color_key = uniqueness.get('tier_color', 'medium')
 
-    # 영역별 색상
     tier_color_map = {
-        "extreme": "#4fd1c5",     # 극히 희귀 — 청록 강조
-        "high": "#f4d35e",         # 독특 — 노랑
-        "medium": "#9aa1b3",       # 차별 가능 — 회색
-        "low": "#5e6577",          # 평범 — 진한 회색
+        "extreme": "#4fd1c5",
+        "high": "#f4d35e",
+        "medium": "#9aa1b3",
+        "low": "#5e6577",
     }
     u_color = tier_color_map.get(u_color_key, "#9aa1b3")
 
-    # 참고용 거리 (작게 표시) — 가장 가까운 가수 정보만
-    closest_member = uniqueness.get('closest_reference', '')
+    # 참고용 거리
     all_ref_distances = uniqueness.get('all_reference_distances', {})
-    # 거리 작은 순 정렬 (가장 가까움 = 가장 비슷 = 가치 낮음)
     sorted_refs = sorted(all_ref_distances.items(), key=lambda kv: kv[1]) if all_ref_distances else []
-
     ref_pills_html = ""
     for name, dist in sorted_refs[:4]:
-        # 거리 0~1 → 차이도 0~100% (높을수록 다름 = 가치)
         diff_pct = int(dist * 100)
         ref_pills_html += (
             f'<div style="display:flex; align-items:center; gap:0.6rem; padding:0.5rem 0.9rem; '
@@ -2370,9 +2365,66 @@ def render_result():
             f'</div>'
         )
 
+    # ─ Voice Identification (검증 지표) ─
+    embedding_used = result.get('embedding_used', False)
+    celeb_matches = result.get('celeb_matches', [])
+    if embedding_used and celeb_matches:
+        # 임베딩 매칭 활성 → 검증 가능 상태
+        top_match = max(celeb_matches, key=lambda m: m.get('similarity', 0))
+        top_name = top_match.get('name', '')
+        top_code = top_match.get('code', '')
+        top_conf = top_match.get('similarity', 0)
+        if top_conf >= 70:
+            verify_color = "#2a9d8f"
+            verify_status = "✓ 고신뢰 식별"
+        elif top_conf >= 50:
+            verify_color = "#f4d35e"
+            verify_status = "△ 중간 신뢰"
+        else:
+            verify_color = "#9aa1b3"
+            verify_status = "? 저신뢰 — 가장 가까운 후보"
+        verification_html = (
+            f'<div style="width:100%; max-width:520px; padding:1.4rem; '
+            f'background:rgba(42,157,143,0.06); border:1px solid {verify_color}40; '
+            f'border-radius:18px; margin:1.5rem 0;">'
+            f'<div style="color:{verify_color}; font-size:0.72rem; font-weight:600; '
+            f'letter-spacing:0.18em; text-transform:uppercase; margin-bottom:0.4rem;">'
+            f'VOICE IDENTIFICATION · 시스템 검증</div>'
+            f'<div style="display:flex; align-items:baseline; justify-content:space-between; gap:1rem;">'
+            f'<div>'
+            f'<span style="color:var(--text-primary); font-size:1.3rem; font-weight:700;">{top_name}</span>'
+            f'<span style="color:var(--text-tertiary); font-family:Space Grotesk; font-size:0.85rem; margin-left:0.5rem;">{top_code}</span>'
+            f'</div>'
+            f'<div style="color:{verify_color}; font-family:Space Grotesk; font-size:1.6rem; font-weight:700;">'
+            f'{int(top_conf)}%'
+            f'</div>'
+            f'</div>'
+            f'<div style="color:{verify_color}; font-size:0.82rem; margin-top:0.5rem;">{verify_status}</div>'
+            f'<div style="color:var(--text-tertiary); font-size:0.78rem; margin-top:0.5rem; line-height:1.5;">'
+            f'※ 알려진 가수의 음원이면 그 가수로 식별되어야 시스템 정상<br>'
+            f'※ 임베딩 기반 코사인 유사도 (Resemblyzer)'
+            f'</div>'
+            f'</div>'
+        )
+    else:
+        verification_html = (
+            f'<div style="width:100%; max-width:520px; padding:1.2rem; '
+            f'background:rgba(255,255,255,0.02); border:1px dashed rgba(255,255,255,0.10); '
+            f'border-radius:18px; margin:1.5rem 0;">'
+            f'<div style="color:var(--text-tertiary); font-size:0.72rem; font-weight:600; '
+            f'letter-spacing:0.18em; text-transform:uppercase; margin-bottom:0.4rem;">'
+            f'VOICE IDENTIFICATION · 비활성</div>'
+            f'<div style="color:var(--text-secondary); font-size:0.92rem; line-height:1.6;">'
+            f'마마무 4인 레퍼런스 임베딩 미등록 상태입니다.<br>'
+            f'시스템 검증(알려진 음원 → 정확한 식별)을 사용하려면 '
+            f'<b style="color:var(--accent);">/?admin=1</b> 에서 레퍼런스 등록 필요.'
+            f'</div>'
+            f'</div>'
+        )
+
     frame4_html = (
         f'<div class="v2-frame" style="padding-top:2.8rem; padding-bottom:2.8rem;">'
-        f'<div class="v2-frame-number">FRAME 4 / 5 · UNIQUENESS</div>'
+        f'<div class="v2-frame-number">FRAME 4 / 5 · UNIQUENESS + IDENTIFICATION</div>'
         # 메인 — 고유성 점수
         f'<div style="font-family:Space Grotesk; font-size:5.5rem; font-weight:800; '
         f'color:{u_color}; line-height:1; margin:1.5rem 0 0.4rem; '
@@ -2380,26 +2432,26 @@ def render_result():
         f'{int(u_score)}'
         f'<span style="font-size:1.8rem; opacity:0.5;"> / 100</span>'
         f'</div>'
-        # Tier 라벨
         f'<div style="color:{u_color}; font-size:1.6rem; font-weight:700; '
-        f'letter-spacing:-0.02em; margin-bottom:0.8rem;">{u_tier}</div>'
-        # Tier 설명
-        f'<div class="v2-frame-body" style="font-size:0.98rem; max-width:480px; '
-        f'margin-bottom:1.8rem;">{u_desc}</div>'
-        # 참고 거리 (작게)
-        f'<div style="width:100%; max-width:520px; padding-top:1.4rem; '
-        f'border-top:1px solid rgba(255,255,255,0.06); margin-top:0.5rem;">'
-        f'<div style="color:var(--text-tertiary); font-size:0.78rem; '
-        f'letter-spacing:0.08em; text-transform:uppercase; margin-bottom:0.8rem;">'
-        f'참고 · 기존 가수와의 거리</div>'
-        f'<div style="display:flex; flex-wrap:wrap; gap:0.5rem; justify-content:center;">'
+        f'letter-spacing:-0.02em; margin-bottom:0.6rem;">{u_tier}</div>'
+        f'<div class="v2-frame-body" style="font-size:0.94rem; max-width:480px; '
+        f'margin-bottom:0.8rem;">{u_desc}</div>'
+        # ─ 검증 지표 (사용자 통찰 반영) ─
+        f'{verification_html}'
+        # 참고 거리 (가장 작게)
+        f'<div style="width:100%; max-width:520px; padding-top:1rem; '
+        f'border-top:1px solid rgba(255,255,255,0.06);">'
+        f'<div style="color:var(--text-tertiary); font-size:0.72rem; '
+        f'letter-spacing:0.08em; text-transform:uppercase; margin-bottom:0.6rem;">'
+        f'4축 거리 · 참고용</div>'
+        f'<div style="display:flex; flex-wrap:wrap; gap:0.45rem; justify-content:center;">'
         f'{ref_pills_html}'
         f'</div>'
-        f'<div style="margin-top:1rem; color:var(--text-tertiary); font-size:0.78rem; '
-        f'line-height:1.6; opacity:0.8;">'
-        f'※ 차이 클수록 기존 가수와 다른 영역 = 발굴 가치 ↑<br>'
+        f'<div style="margin-top:0.9rem; color:var(--text-tertiary); font-size:0.74rem; '
+        f'line-height:1.6; opacity:0.75;">'
         f'※ 본 시스템은 닮은 보컬이 아니라 <b style="color:var(--accent);">'
-        f'기존에 없는 보컬</b>을 찾습니다 (회사 헌법)'
+        f'기존에 없는 보컬</b>을 찾습니다 (회사 헌법). '
+        f'단, 알려진 가수 음원이면 위 검증 영역에서 정확히 식별되어야 신뢰 가능.'
         f'</div>'
         f'</div>'
         f'</div>'
@@ -2784,10 +2836,111 @@ def render_admin_references():
 # 라우터
 # ============================================================
 
-# 관리자 모드 — URL에 ?admin=1
+# 검증 모드 페이지
+def render_verification():
+    """시스템 검증 페이지 — 알려진 음원으로 식별 정확도 테스트."""
+    st.markdown("""
+    <div class="v2-topbar-min">
+        <div class="v2-brand-wave">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                <polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+            <span class="v2-brand-text">SYSTEM VERIFICATION</span>
+        </div>
+        <div class="v2-version-pill">정확도 측정</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("## 시스템 정확도 검증")
+    st.caption(
+        "알려진 가수의 음원을 업로드하면 시스템이 그 가수를 정확하게 식별하는지 확인합니다. "
+        "정확도 70%+ 면 시스템 신뢰 가능. 그 미만이면 측정 로직·임베딩 보완 필요."
+    )
+
+    try:
+        from vocal_embedder import extract_embedding, get_default_library
+    except ImportError as e:
+        st.error(f"임베딩 모듈 로드 실패: {e}")
+        return
+
+    library = get_default_library()
+    if library.is_empty():
+        st.warning(
+            "레퍼런스가 등록되지 않아 검증 불가. "
+            "먼저 [/?admin=1](/?admin=1) 에서 마마무 4인 레퍼런스 등록 필요."
+        )
+        if st.button("← 메인 앱으로", use_container_width=True, type="secondary"):
+            st.query_params.clear()
+            st.rerun()
+        return
+
+    # 등록된 레퍼런스 표시
+    st.markdown("### 등록된 레퍼런스")
+    for name in library.member_names():
+        st.caption(f"✓ {name} 임베딩 등록됨")
+
+    st.markdown("---")
+    st.markdown("### 테스트 — 알려진 음원으로 식별")
+
+    expected = st.selectbox(
+        "이 음원의 실제 가수는?",
+        library.member_names(),
+        help="정답을 선택하면 시스템 식별 결과와 비교합니다."
+    )
+    test_audio = st.file_uploader(
+        "테스트 음원 (해당 가수의 다른 곡)",
+        type=["wav", "mp3", "m4a", "ogg", "flac"],
+        help="레퍼런스로 등록한 곡이 아닌 다른 곡 권장",
+    )
+
+    if test_audio is not None and st.button("검증 시작", use_container_width=True):
+        with st.spinner("임베딩 추출 + 매칭 중..."):
+            try:
+                audio_bytes = test_audio.getvalue()
+                query_emb = extract_embedding(audio_bytes)
+                matches = library.compute_matches(query_emb)
+                if not matches:
+                    st.error("매칭 결과 없음")
+                    return
+                top = matches[0]
+                correct = top["name"] == expected
+                if correct:
+                    st.success(
+                        f"✓ 시스템 식별 성공!\n\n"
+                        f"식별: **{top['name']}** ({int(top['similarity'])}% 신뢰도)\n\n"
+                        f"정답: **{expected}** — 일치"
+                    )
+                else:
+                    st.error(
+                        f"✗ 시스템 식별 실패\n\n"
+                        f"시스템 식별: **{top['name']}** ({int(top['similarity'])}%)\n\n"
+                        f"정답: **{expected}**\n\n"
+                        f"→ 측정 로직 또는 레퍼런스 품질 검토 필요"
+                    )
+                # 모든 후보 표시
+                st.markdown("#### 전체 후보 순위")
+                for m in matches:
+                    icon = "✓" if m["name"] == expected else "  "
+                    st.markdown(
+                        f"{icon} **{m['name']}** ({m['code'] if 'code' in m else ''}) — "
+                        f"{int(m['similarity'])}% (raw cosine: {m['raw_cosine']:.3f})"
+                    )
+            except Exception as e:
+                st.error(f"검증 실패: {e}")
+
+    st.markdown("---")
+    if st.button("← 메인 앱으로", use_container_width=True, type="secondary"):
+        st.query_params.clear()
+        st.rerun()
+
+
+# 라우터
 query_params = st.query_params
 if query_params.get("admin") == "1":
     render_admin_references()
+elif query_params.get("verify") == "1":
+    render_verification()
 elif st.session_state.stage == "home":
     render_home()
 elif st.session_state.stage == "analyzing":
