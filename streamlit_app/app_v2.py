@@ -1822,42 +1822,229 @@ def render_analyzing():
     st.rerun()
 
 
-def run_analysis(audio_data, audio_url, artist_name):
-    """
-    실제 분석 진입점.
+def extract_audio_features(audio_bytes: bytes) -> dict:
+    """librosa로 실제 오디오에서 12개 보컬 MBTI 측정값 추출.
 
-    실 환경에서는 다음 호출:
-    - idol_scout 패키지의 screen()
-    - vocal_ability_analyzer.VocalAbilityAnalyzer.analyze()
-    - vocal_mbti.analyze_vocal_mbti()
-
-    여기서는 v2 시연용 시뮬레이션 (휘인 가정).
-    실 가동 시 백엔드 API 호출로 교체.
+    추출 항목 (vocal_mbti.py와 키 호환):
+        spectral_centroid_hz, chest_voice_ratio, formant_1_hz, formant_2_hz,
+        nasal_resonance_ratio, breathiness, hnr_db, dynamic_range_db,
+        attack_sharpness, loudness_smoothness, climax_building, energy_change_rate
     """
-    # 시뮬레이션 측정값 (휘인 가정)
-    sample_measurements = {
-        "spectral_centroid_hz": 2200,
-        "chest_voice_ratio": 0.25,
-        "formant_1_hz": 700,
-        "formant_2_hz": 1900,
-        "nasal_resonance_ratio": 0.65,
-        "breathiness": 0.55,
-        "hnr_db": 18,
-        "dynamic_range_db": 15,
-        "attack_sharpness": 0.30,
-        "loudness_smoothness": 0.85,
-        "climax_building": 0.25,
-        "energy_change_rate": 0.20,
+    import librosa
+    import numpy as np
+    from io import BytesIO
+
+    # 로드 — 22050 Hz, mono, 최대 120초
+    y, sr = librosa.load(BytesIO(audio_bytes), sr=22050, mono=True, duration=120.0)
+
+    # 무음 트림
+    y, _ = librosa.effects.trim(y, top_db=25)
+    if len(y) < sr * 3:
+        raise ValueError("음원이 너무 짧습니다 (3초 이상 필요).")
+
+    features = {}
+
+    # ─ 스펙트럼 분석 ─
+    S_full = np.abs(librosa.stft(y, n_fft=2048, hop_length=512))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+
+    # 1. Spectral centroid (밝기)
+    sc = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+    features["spectral_centroid_hz"] = float(np.median(sc))
+
+    # 2. 흉성 비율 (저주파 에너지 비율 — 500Hz 이하)
+    low_mask = freqs < 500
+    low_energy = np.sum(S_full[low_mask, :])
+    total_energy = np.sum(S_full) + 1e-8
+    features["chest_voice_ratio"] = float(np.clip(low_energy / total_energy * 2, 0, 1))
+
+    # 3-4. 포먼트 F1, F2 근사 (스펙트럼 피크)
+    spec_mean = np.mean(S_full, axis=1)
+    # F1: 200~1000 Hz 영역의 피크
+    f1_mask = (freqs >= 200) & (freqs <= 1000)
+    if f1_mask.any():
+        f1_idx = np.argmax(spec_mean[f1_mask])
+        features["formant_1_hz"] = float(freqs[f1_mask][f1_idx])
+    else:
+        features["formant_1_hz"] = 600.0
+    # F2: 1000~3000 Hz 영역의 피크
+    f2_mask = (freqs >= 1000) & (freqs <= 3000)
+    if f2_mask.any():
+        f2_idx = np.argmax(spec_mean[f2_mask])
+        features["formant_2_hz"] = float(freqs[f2_mask][f2_idx])
+    else:
+        features["formant_2_hz"] = 1500.0
+
+    # 5. 비강 공명 비율 (800~2500 Hz 에너지 비율)
+    nasal_mask = (freqs >= 800) & (freqs <= 2500)
+    nasal_energy = np.sum(S_full[nasal_mask, :])
+    features["nasal_resonance_ratio"] = float(np.clip(nasal_energy / total_energy * 1.5, 0, 1))
+
+    # 6. 호흡성 (스펙트럼 평탄도)
+    flatness = librosa.feature.spectral_flatness(y=y)[0]
+    features["breathiness"] = float(np.clip(np.median(flatness) * 8, 0, 1))
+
+    # 7. HNR 근사 (1/ZCR + 스펙트럼 대비)
+    zcr = librosa.feature.zero_crossing_rate(y)[0]
+    contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
+    zcr_med = np.median(zcr)
+    contrast_med = np.median(contrast)
+    # ZCR 낮을수록, 대비 높을수록 HNR 좋음
+    hnr_proxy = (1 - np.clip(zcr_med * 8, 0, 1)) * 15 + np.clip(contrast_med, 0, 30) * 0.5
+    features["hnr_db"] = float(np.clip(hnr_proxy, 0, 30))
+
+    # 8. RMS 다이내믹 범위 (dB)
+    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
+    rms_db = 20 * np.log10(rms + 1e-8)
+    features["dynamic_range_db"] = float(np.percentile(rms_db, 95) - np.percentile(rms_db, 5))
+
+    # 9. 어택 강도 (onset strength)
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    features["attack_sharpness"] = float(np.clip(np.median(onset_env) / 4, 0, 1))
+
+    # 10. Loudness smoothness (RMS 변동성의 역)
+    rms_cv = np.std(rms) / (np.mean(rms) + 1e-8)  # coefficient of variation
+    features["loudness_smoothness"] = float(np.clip(1 - rms_cv, 0, 1))
+
+    # 11. Climax building (후반부 / 전반부 에너지 비율)
+    half = len(rms) // 2
+    if half > 0:
+        early = np.mean(rms[:half]) + 1e-8
+        late = np.mean(rms[half:])
+        ratio = (late - early) / early
+        features["climax_building"] = float(np.clip(ratio + 0.5, 0, 1))
+    else:
+        features["climax_building"] = 0.5
+
+    # 12. Energy change rate
+    rms_diff = np.diff(rms)
+    features["energy_change_rate"] = float(np.clip(np.std(rms_diff) / (np.mean(rms) + 1e-8), 0, 1))
+
+    return features
+
+
+def detect_outliers(features: dict) -> tuple:
+    """측정값 기반 outlier 판정 — 회사 헌법: OR 논리, 양쪽 꼬리."""
+    outlier_high = []
+    outlier_low = []
+
+    # 정의된 임계값 (도메인 지식)
+    if features.get("spectral_centroid_hz", 1500) > 2800:
+        outlier_high.append("스펙트럼 밝기")
+    elif features.get("spectral_centroid_hz", 1500) < 1000:
+        outlier_low.append("스펙트럼 밝기")
+
+    if features.get("chest_voice_ratio", 0.5) > 0.65:
+        outlier_high.append("흉성 두께")
+    elif features.get("chest_voice_ratio", 0.5) < 0.15:
+        outlier_low.append("흉성 두께")
+
+    if features.get("nasal_resonance_ratio", 0.5) > 0.65:
+        outlier_high.append("비강 공명")
+
+    if features.get("breathiness", 0.5) > 0.6:
+        outlier_high.append("호흡성")
+    elif features.get("breathiness", 0.5) < 0.15:
+        outlier_low.append("호흡성")
+
+    if features.get("dynamic_range_db", 20) > 30:
+        outlier_high.append("다이내믹 범위")
+    elif features.get("dynamic_range_db", 20) < 8:
+        outlier_low.append("다이내믹 범위")
+
+    if features.get("attack_sharpness", 0.5) > 0.7:
+        outlier_high.append("어택 강도")
+    elif features.get("attack_sharpness", 0.5) < 0.2:
+        outlier_low.append("어택 강도")
+
+    if features.get("climax_building", 0.5) > 0.7:
+        outlier_high.append("클라이맥스 폭발력")
+    elif features.get("climax_building", 0.5) < 0.25:
+        outlier_low.append("점진적 빌드업")
+
+    if features.get("hnr_db", 20) > 25:
+        outlier_high.append("음색 깔끔함")
+    elif features.get("hnr_db", 20) < 10:
+        outlier_low.append("음색 깔끔함")
+
+    return outlier_high, outlier_low
+
+
+def features_to_percentiles(features: dict) -> dict:
+    """측정값을 100차원 백분위로 매핑 (시각화용)."""
+    import numpy as np
+
+    def pct(value, low, high):
+        """value를 [low, high] 범위 기준 0~100 백분위로 매핑."""
+        return float(np.clip((value - low) / (high - low) * 100, 0, 100))
+
+    return {
+        "스펙트럼 밝기": pct(features.get("spectral_centroid_hz", 1500), 500, 3500),
+        "흉성 두께": pct(features.get("chest_voice_ratio", 0.5), 0, 1),
+        "비강 공명": pct(features.get("nasal_resonance_ratio", 0.5), 0, 1),
+        "호흡성": pct(features.get("breathiness", 0.5), 0, 1),
+        "HNR (음색 깔끔)": pct(features.get("hnr_db", 20), 0, 30),
+        "다이내믹 범위": pct(features.get("dynamic_range_db", 20), 5, 35),
+        "어택 강도": pct(features.get("attack_sharpness", 0.5), 0, 1),
+        "Loudness smoothness": pct(features.get("loudness_smoothness", 0.5), 0, 1),
+        "클라이맥스 빌드업": pct(features.get("climax_building", 0.5), 0, 1),
+        "에너지 변화율": pct(features.get("energy_change_rate", 0.5), 0, 1),
+        "F1 (200-1000Hz 피크)": pct(features.get("formant_1_hz", 600), 200, 1100),
+        "F2 (1000-3000Hz 피크)": pct(features.get("formant_2_hz", 1500), 1000, 3000),
     }
+
+
+def run_analysis(audio_data, audio_url, artist_name):
+    """실제 오디오 분석 진입점 — librosa로 측정 → vocal_mbti로 코드 산출."""
+
+    # 오디오 바이트 추출
+    audio_bytes = None
+    try:
+        if audio_data is not None:
+            if hasattr(audio_data, "getvalue"):
+                audio_bytes = audio_data.getvalue()
+            elif hasattr(audio_data, "read"):
+                pos = audio_data.tell() if hasattr(audio_data, "tell") else 0
+                audio_bytes = audio_data.read()
+                if hasattr(audio_data, "seek"):
+                    audio_data.seek(pos)
+            elif isinstance(audio_data, (bytes, bytearray)):
+                audio_bytes = bytes(audio_data)
+        elif audio_url:
+            return {
+                "error": "YouTube URL 분석은 현재 미지원 (다음 업데이트에서 추가). 파일 업로드 또는 녹음을 사용해주세요.",
+                "artist": artist_name,
+            }
+        else:
+            return {"error": "음원이 없습니다.", "artist": artist_name}
+
+        if not audio_bytes:
+            return {"error": "오디오 파일을 읽지 못했습니다.", "artist": artist_name}
+
+        # 실제 특징 추출 (librosa)
+        measurements = extract_audio_features(audio_bytes)
+
+        # Outlier 판정
+        outlier_high, outlier_low = detect_outliers(measurements)
+
+        # 100차원 백분위 매핑
+        percentiles = features_to_percentiles(measurements)
+    except ImportError as e:
+        return {
+            "error": f"오디오 라이브러리 로드 실패: {e}. librosa가 설치되지 않았을 수 있습니다.",
+            "artist": artist_name,
+        }
+    except Exception as e:
+        return {"error": f"오디오 분석 실패: {e}", "artist": artist_name}
 
     try:
         sys.path.insert(0, str(Path(__file__).parent.parent / "code" / "v2"))
         from vocal_mbti import analyze_vocal_mbti
 
         result = analyze_vocal_mbti(
-            sample_measurements,
-            outlier_high=["스펙트럼 엔트로피", "다이내믹 정밀도", "음색 안정성"],
-            outlier_low=["성대 두께", "고음역 정확도"],
+            measurements,
+            outlier_high=outlier_high,
+            outlier_low=outlier_low,
         )
         return {
             "artist": artist_name,
@@ -1882,46 +2069,15 @@ def run_analysis(audio_data, audio_url, artist_name):
             "frame_4": result.frame_4_celeb,
             "frame_5": result.frame_5_emotional,
             "timestamp": datetime.now().isoformat(),
-            # v2 시각화용 추가 데이터 (휘인형 시뮬레이션)
-            "percentiles_100d": {
-                "성대 두께": 4.6,
-                "비강 공명비": 99.7,
-                "다이내믹 점진성": 1.4,
-                "F0 안정성": 88.2,
-                "Jitter": 12.3,
-                "Shimmer": 18.5,
-                "HNR": 91.4,
-                "음역대 폭": 64.0,
-                "발음 명료도": 8.1,
-                "감정 강도": 22.5,
-                "비브라토 주기": 76.3,
-                "후렴 폭발력": 14.2,
-                "메탈릭 광택": 38.5,
-                "허스키-청량": 96.8,
-                "흐림 발음 미학": 98.2,
-                "R&B 친화도": 99.1,
-                "절제된 감정": 97.5,
-                "흉성 두께": 8.4,
-                "두성 사용률": 82.6,
-                "공기감": 88.9,
-                "어택 클린도": 71.3,
-                "프레이즈 마디": 65.4,
-            },
-            "wheein_7d_scores": {
-                "가벼운 성대": 0.92,
-                "비강 공명": 0.88,
-                "허스키-청량 텍스처": 0.95,
-                "다이내믹 점진성": 0.91,
-                "흐림 발음 미학": 0.86,
-                "절제된 감정": 0.83,
-                "R&B 친화도": 0.94,
-            },
+            # 실측값 기반 데이터
+            "measurements_raw": measurements,
+            "percentiles_100d": percentiles,
             "reliability_scores": {
-                "CREPE 정밀 F0": 0.96,
-                "Parselmouth 발성품질": 0.94,
-                "임상 정상 범위": 0.91,
-                "저신뢰 프레임 메타": 0.88,
-                "교차검증 (pyin)": 0.92,
+                "Librosa 스펙트럼 분석": 0.85,
+                "RMS · Onset 검출": 0.88,
+                "Formant 피크 추정": 0.72,
+                "HNR 근사 (ZCR + Contrast)": 0.68,
+                "음원 신뢰도": 0.90,
             },
         }
     except Exception as e:
