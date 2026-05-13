@@ -1822,95 +1822,216 @@ def render_analyzing():
     st.rerun()
 
 
-def extract_audio_features(audio_bytes: bytes) -> dict:
-    """librosa로 실제 오디오에서 12개 보컬 MBTI 측정값 추출.
+def _try_parselmouth_features(audio_bytes: bytes) -> dict:
+    """Parselmouth(Praat 래퍼)로 정밀 측정값 추출. 실패 시 빈 dict 반환.
 
-    추출 항목 (vocal_mbti.py와 키 호환):
+    측정:
+        - formant_1_hz, formant_2_hz, formant_3_hz (정확한 LPC 기반)
+        - hnr_db (Harmonics-to-Noise Ratio, 진짜 임상값)
+        - jitter_local, shimmer_local (음성 안정성)
+    """
+    try:
+        import parselmouth
+        from parselmouth.praat import call
+        from io import BytesIO
+        import soundfile as sf
+        import numpy as np
+
+        # 1. soundfile로 numpy array 로드
+        data, sr = sf.read(BytesIO(audio_bytes))
+        if data.ndim > 1:
+            data = data.mean(axis=1)  # mono
+        if len(data) < sr * 1.0:
+            return {}
+
+        # 2. Parselmouth Sound 객체 생성
+        sound = parselmouth.Sound(data.astype(np.float64), sampling_frequency=sr)
+
+        result = {}
+
+        # 3. Formant 분석 (Burg method)
+        try:
+            formants = sound.to_formant_burg(max_number_of_formants=5, maximum_formant=5500)
+            duration = sound.duration
+            # 여러 시점에서 평균
+            time_points = np.linspace(0.1, duration - 0.1, 20)
+            f1_vals, f2_vals, f3_vals = [], [], []
+            for t in time_points:
+                f1 = call(formants, "Get value at time", 1, t, "Hertz", "Linear")
+                f2 = call(formants, "Get value at time", 2, t, "Hertz", "Linear")
+                f3 = call(formants, "Get value at time", 3, t, "Hertz", "Linear")
+                if not (np.isnan(f1) or np.isnan(f2)):
+                    f1_vals.append(f1)
+                    f2_vals.append(f2)
+                if not np.isnan(f3):
+                    f3_vals.append(f3)
+            if f1_vals:
+                result["formant_1_hz"] = float(np.median(f1_vals))
+                result["formant_2_hz"] = float(np.median(f2_vals))
+            if f3_vals:
+                result["formant_3_hz"] = float(np.median(f3_vals))
+        except Exception:
+            pass
+
+        # 4. HNR (진짜 임상 값)
+        try:
+            harmonicity = sound.to_harmonicity_cc()
+            hnr = call(harmonicity, "Get mean", 0, 0)
+            if not np.isnan(hnr):
+                result["hnr_db"] = float(np.clip(hnr, 0, 35))
+        except Exception:
+            pass
+
+        # 5. Jitter & Shimmer (음성 안정성)
+        try:
+            point_process = call(sound, "To PointProcess (periodic, cc)", 75, 600)
+            jitter = call(point_process, "Get jitter (local)", 0, 0, 0.0001, 0.02, 1.3)
+            shimmer = call([sound, point_process], "Get shimmer (local)",
+                          0, 0, 0.0001, 0.02, 1.3, 1.6)
+            if not np.isnan(jitter):
+                result["jitter_local"] = float(jitter)
+            if not np.isnan(shimmer):
+                result["shimmer_local"] = float(shimmer)
+        except Exception:
+            pass
+
+        return result
+    except ImportError:
+        return {}
+    except Exception:
+        return {}
+
+
+def extract_audio_features(audio_bytes: bytes) -> dict:
+    """librosa + Parselmouth 통합 — 정밀 측정값 추출.
+
+    v2.2 개선:
+    - Parselmouth(Praat)로 포먼트·HNR·Jitter·Shimmer 임상 정확 측정
+    - HPSS로 보컬 멜로디 분리
+    - 한국 여자 보컬 분포 맞춤 임계값
+
+    추출 항목 (vocal_mbti.py 키 호환):
         spectral_centroid_hz, chest_voice_ratio, formant_1_hz, formant_2_hz,
         nasal_resonance_ratio, breathiness, hnr_db, dynamic_range_db,
         attack_sharpness, loudness_smoothness, climax_building, energy_change_rate
+    + 추가 (Parselmouth):
+        formant_3_hz, jitter_local, shimmer_local
     """
     import librosa
     import numpy as np
     from io import BytesIO
 
-    # 로드 — 22050 Hz, mono, 최대 120초
-    y, sr = librosa.load(BytesIO(audio_bytes), sr=22050, mono=True, duration=120.0)
+    # 1) Parselmouth 정밀 측정 (먼저 시도)
+    parselmouth_features = _try_parselmouth_features(audio_bytes)
+
+    # 로드 — 22050 Hz, mono, 최대 90초
+    y, sr = librosa.load(BytesIO(audio_bytes), sr=22050, mono=True, duration=90.0)
 
     # 무음 트림
     y, _ = librosa.effects.trim(y, top_db=25)
     if len(y) < sr * 3:
         raise ValueError("음원이 너무 짧습니다 (3초 이상 필요).")
 
+    # ─ 핵심 개선: 하모닉-퍼커시브 분리 (보컬 멜로디만) ─
+    try:
+        y_harmonic, y_percussive = librosa.effects.hpss(y, margin=3.0)
+        y_analysis = y_harmonic  # 보컬 멜로디 위주 분석
+    except Exception:
+        y_analysis = y  # 분리 실패 시 원본 사용
+
     features = {}
 
-    # ─ 스펙트럼 분석 ─
-    S_full = np.abs(librosa.stft(y, n_fft=2048, hop_length=512))
+    # ─ 스펙트럼 분석 (하모닉 신호 기준) ─
+    S_full = np.abs(librosa.stft(y_analysis, n_fft=2048, hop_length=512))
     freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
 
-    # 1. Spectral centroid (밝기)
-    sc = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-    features["spectral_centroid_hz"] = float(np.median(sc))
+    # 1. Spectral centroid — 하모닉만, 그리고 vocal range(80~4000Hz)로 제한
+    vocal_mask = (freqs >= 80) & (freqs <= 4000)
+    S_vocal = S_full[vocal_mask, :]
+    freqs_vocal = freqs[vocal_mask]
+    # 가중 평균으로 centroid 직접 계산 (잡음 제거 강화)
+    spec_sum = np.sum(S_vocal, axis=0) + 1e-8
+    centroids_frame = np.sum(S_vocal * freqs_vocal[:, np.newaxis], axis=0) / spec_sum
+    # 에너지 있는 프레임만 (silence 제외)
+    energy_threshold = np.percentile(spec_sum, 20)
+    valid_frames = spec_sum > energy_threshold
+    if valid_frames.any():
+        features["spectral_centroid_hz"] = float(np.median(centroids_frame[valid_frames]))
+    else:
+        features["spectral_centroid_hz"] = float(np.median(centroids_frame))
 
-    # 2. 흉성 비율 (저주파 에너지 비율 — 500Hz 이하)
-    low_mask = freqs < 500
-    low_energy = np.sum(S_full[low_mask, :])
-    total_energy = np.sum(S_full) + 1e-8
-    features["chest_voice_ratio"] = float(np.clip(low_energy / total_energy * 2, 0, 1))
+    # 2. 흉성 비율 — 다중 지표 종합
+    spec_mean = np.mean(S_full[vocal_mask, :], axis=1)
+    spec_mean_norm = spec_mean / (np.sum(spec_mean) + 1e-8)
 
-    # 3-4. 포먼트 F1, F2 근사 (스펙트럼 피크)
-    spec_mean = np.mean(S_full, axis=1)
+    # 2a) 저주파(<600Hz) 에너지 비율
+    low_mask = freqs_vocal < 600
+    low_ratio = np.sum(spec_mean_norm[low_mask])
+
+    # 2b) Spectral rolloff (85% 에너지가 어디까지 분포하는가)
+    rolloff = librosa.feature.spectral_rolloff(y=y_analysis, sr=sr, roll_percent=0.85)[0]
+    rolloff_med = float(np.median(rolloff))
+    # rolloff 낮음 = 어두움 (흉성 많음). 1500=어두움, 3500=밝음
+    rolloff_dark_score = np.clip((3500 - rolloff_med) / 2000, 0, 1)
+
+    # 2c) 종합 — 저주파 비율과 rolloff 다크 점수 평균
+    chest_voice_combined = (low_ratio * 1.8 + rolloff_dark_score) / 2
+    features["chest_voice_ratio"] = float(np.clip(chest_voice_combined, 0, 1))
+
+    # 3-4. 포먼트 F1, F2 근사 (스펙트럼 피크) — 하모닉 평균에서 추출
+    spec_full_mean = np.mean(S_full, axis=1)
+
     # F1: 200~1000 Hz 영역의 피크
     f1_mask = (freqs >= 200) & (freqs <= 1000)
     if f1_mask.any():
-        f1_idx = np.argmax(spec_mean[f1_mask])
+        f1_idx = np.argmax(spec_full_mean[f1_mask])
         features["formant_1_hz"] = float(freqs[f1_mask][f1_idx])
     else:
         features["formant_1_hz"] = 600.0
     # F2: 1000~3000 Hz 영역의 피크
     f2_mask = (freqs >= 1000) & (freqs <= 3000)
     if f2_mask.any():
-        f2_idx = np.argmax(spec_mean[f2_mask])
+        f2_idx = np.argmax(spec_full_mean[f2_mask])
         features["formant_2_hz"] = float(freqs[f2_mask][f2_idx])
     else:
         features["formant_2_hz"] = 1500.0
 
-    # 5. 비강 공명 비율 (800~2500 Hz 에너지 비율)
-    nasal_mask = (freqs >= 800) & (freqs <= 2500)
+    # 5. 비강 공명 비율 (1000~2500 Hz 에너지 비율 — 비강 피크 영역)
+    nasal_mask = (freqs >= 1000) & (freqs <= 2500)
     nasal_energy = np.sum(S_full[nasal_mask, :])
-    features["nasal_resonance_ratio"] = float(np.clip(nasal_energy / total_energy * 1.5, 0, 1))
+    total_energy = np.sum(S_full) + 1e-8
+    features["nasal_resonance_ratio"] = float(np.clip(nasal_energy / total_energy * 1.4, 0, 1))
 
-    # 6. 호흡성 (스펙트럼 평탄도)
-    flatness = librosa.feature.spectral_flatness(y=y)[0]
-    features["breathiness"] = float(np.clip(np.median(flatness) * 8, 0, 1))
+    # 6. 호흡성 (스펙트럼 평탄도 — 하모닉 신호에서)
+    flatness = librosa.feature.spectral_flatness(y=y_analysis)[0]
+    features["breathiness"] = float(np.clip(np.median(flatness) * 10, 0, 1))
 
-    # 7. HNR 근사 (1/ZCR + 스펙트럼 대비)
-    zcr = librosa.feature.zero_crossing_rate(y)[0]
-    contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
-    zcr_med = np.median(zcr)
-    contrast_med = np.median(contrast)
-    # ZCR 낮을수록, 대비 높을수록 HNR 좋음
+    # 7. HNR 근사 — ZCR 역 + spectral contrast
+    zcr = librosa.feature.zero_crossing_rate(y_analysis)[0]
+    contrast = librosa.feature.spectral_contrast(y=y_analysis, sr=sr)
+    zcr_med = float(np.median(zcr))
+    contrast_med = float(np.median(contrast))
     hnr_proxy = (1 - np.clip(zcr_med * 8, 0, 1)) * 15 + np.clip(contrast_med, 0, 30) * 0.5
     features["hnr_db"] = float(np.clip(hnr_proxy, 0, 30))
 
-    # 8. RMS 다이내믹 범위 (dB)
+    # 8. RMS 다이내믹 범위 — 원본 신호 기준 (보컬 다이내믹스 그대로)
     rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
     rms_db = 20 * np.log10(rms + 1e-8)
     features["dynamic_range_db"] = float(np.percentile(rms_db, 95) - np.percentile(rms_db, 5))
 
-    # 9. 어택 강도 (onset strength)
+    # 9. 어택 강도 — onset strength 평균
     onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    features["attack_sharpness"] = float(np.clip(np.median(onset_env) / 4, 0, 1))
+    features["attack_sharpness"] = float(np.clip(np.median(onset_env) / 3, 0, 1))
 
-    # 10. Loudness smoothness (RMS 변동성의 역)
-    rms_cv = np.std(rms) / (np.mean(rms) + 1e-8)  # coefficient of variation
-    features["loudness_smoothness"] = float(np.clip(1 - rms_cv, 0, 1))
+    # 10. Loudness smoothness
+    rms_cv = float(np.std(rms) / (np.mean(rms) + 1e-8))
+    features["loudness_smoothness"] = float(np.clip(1 - rms_cv * 0.6, 0, 1))
 
-    # 11. Climax building (후반부 / 전반부 에너지 비율)
+    # 11. Climax building — 후반부/전반부 에너지 비율
     half = len(rms) // 2
     if half > 0:
-        early = np.mean(rms[:half]) + 1e-8
-        late = np.mean(rms[half:])
+        early = float(np.mean(rms[:half])) + 1e-8
+        late = float(np.mean(rms[half:]))
         ratio = (late - early) / early
         features["climax_building"] = float(np.clip(ratio + 0.5, 0, 1))
     else:
@@ -1918,7 +2039,26 @@ def extract_audio_features(audio_bytes: bytes) -> dict:
 
     # 12. Energy change rate
     rms_diff = np.diff(rms)
-    features["energy_change_rate"] = float(np.clip(np.std(rms_diff) / (np.mean(rms) + 1e-8), 0, 1))
+    features["energy_change_rate"] = float(np.clip(np.std(rms_diff) / (np.mean(rms) + 1e-8) * 0.8, 0, 1))
+
+    # ─ Parselmouth 정밀 측정값으로 덮어쓰기 (있을 때만) ─
+    # Parselmouth는 LPC 기반이라 스펙트럼 피크 추정보다 정확
+    if parselmouth_features:
+        if "formant_1_hz" in parselmouth_features:
+            features["formant_1_hz"] = parselmouth_features["formant_1_hz"]
+        if "formant_2_hz" in parselmouth_features:
+            features["formant_2_hz"] = parselmouth_features["formant_2_hz"]
+        if "formant_3_hz" in parselmouth_features:
+            features["formant_3_hz"] = parselmouth_features["formant_3_hz"]
+        if "hnr_db" in parselmouth_features:
+            features["hnr_db"] = parselmouth_features["hnr_db"]
+        if "jitter_local" in parselmouth_features:
+            features["jitter_local"] = parselmouth_features["jitter_local"]
+        if "shimmer_local" in parselmouth_features:
+            features["shimmer_local"] = parselmouth_features["shimmer_local"]
+        features["_parselmouth_used"] = True
+    else:
+        features["_parselmouth_used"] = False
 
     return features
 
@@ -1994,6 +2134,17 @@ def features_to_percentiles(features: dict) -> dict:
     }
 
 
+def _lookup_member_code(name: str) -> str:
+    """멤버 이름 → MBTI 코드 매핑 (셀럽 매칭 결과 표시용)."""
+    mapping = {
+        "솔라": "BWOP",
+        "휘인": "BWIS",
+        "화사": "DWOP",
+        "문별": "BRIS",
+    }
+    return mapping.get(name, "")
+
+
 def run_analysis(audio_data, audio_url, artist_name):
     """실제 오디오 분석 진입점 — librosa로 측정 → vocal_mbti로 코드 산출."""
 
@@ -2021,7 +2172,7 @@ def run_analysis(audio_data, audio_url, artist_name):
         if not audio_bytes:
             return {"error": "오디오 파일을 읽지 못했습니다.", "artist": artist_name}
 
-        # 실제 특징 추출 (librosa)
+        # 실제 특징 추출 (librosa + Parselmouth)
         measurements = extract_audio_features(audio_bytes)
 
         # Outlier 판정
@@ -2029,6 +2180,21 @@ def run_analysis(audio_data, audio_url, artist_name):
 
         # 100차원 백분위 매핑
         percentiles = features_to_percentiles(measurements)
+
+        # ─ Resemblyzer 임베딩 기반 셀럽 매칭 ─
+        embedding_matches = None
+        embedding_used = False
+        try:
+            from vocal_embedder import extract_embedding, get_default_library
+            embedding = extract_embedding(audio_bytes)
+            library = get_default_library()
+            if not library.is_empty():
+                embedding_matches = library.compute_matches(embedding)
+                embedding_used = True
+        except ImportError:
+            pass
+        except Exception:
+            pass  # 임베딩 실패해도 librosa 결과는 유효
     except ImportError as e:
         return {
             "error": f"오디오 라이브러리 로드 실패: {e}. librosa가 설치되지 않았을 수 있습니다.",
@@ -2057,10 +2223,17 @@ def run_analysis(audio_data, audio_url, artist_name):
                 "direction": result.axis_scores.direction,
                 "style": result.axis_scores.style,
             },
-            "celeb_matches": [
-                {"name": m.name, "code": m.code, "similarity": m.similarity_percent}
-                for m in result.celeb_matches
-            ],
+            "celeb_matches": (
+                # Resemblyzer 임베딩 매칭이 있으면 우선 (정확도 ↑)
+                [{"name": m["name"],
+                  "code": _lookup_member_code(m["name"]),
+                  "similarity": m["similarity"]}
+                 for m in embedding_matches]
+                if embedding_used and embedding_matches
+                else [{"name": m.name, "code": m.code, "similarity": m.similarity_percent}
+                      for m in result.celeb_matches]
+            ),
+            "embedding_used": embedding_used,
             "outlier_high": result.outlier_high_dimensions,
             "outlier_low": result.outlier_low_dimensions,
             "frame_1": result.frame_1_attention,
@@ -2441,10 +2614,95 @@ def render_deep():
 
 
 # ============================================================
+# 관리자 페이지 — 레퍼런스 임베딩 등록 (?admin=1)
+# ============================================================
+
+def render_admin_references():
+    """마마무 4인 레퍼런스 임베딩 등록·갱신 관리자 페이지."""
+    st.markdown("""
+    <div class="v2-topbar-min">
+        <div class="v2-brand-wave">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 6v6l4 2"/>
+            </svg>
+            <span class="v2-brand-text">ADMIN · REFERENCE LIBRARY</span>
+        </div>
+        <div class="v2-version-pill">v2.2</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("## 보컬 레퍼런스 임베딩 등록")
+    st.caption("마마무 4인의 보컬 단독 음원(보컬 스템)을 업로드하여 임베딩을 생성·저장합니다. 한 번 등록하면 모든 사용자의 분석 시 비교 기준으로 사용됩니다.")
+
+    try:
+        from vocal_embedder import (
+            extract_embedding, get_default_library, DEFAULT_LIBRARY_PATH
+        )
+    except ImportError as e:
+        st.error(f"임베딩 모듈 로드 실패: {e}")
+        return
+
+    library = get_default_library()
+
+    # 현재 등록 상태
+    st.markdown("### 현재 등록 상태")
+    members = ["솔라", "휘인", "화사", "문별"]
+    cols = st.columns(4)
+    for i, name in enumerate(members):
+        with cols[i]:
+            status = "✓ 등록됨" if name in library.references else "○ 미등록"
+            color = "var(--accent)" if name in library.references else "var(--text-tertiary)"
+            st.markdown(
+                f'<div style="padding:1rem; background:rgba(255,255,255,0.04); '
+                f'border-radius:14px; text-align:center;">'
+                f'<div style="color:var(--text-primary); font-weight:600;">{name}</div>'
+                f'<div style="color:{color}; font-size:0.85rem; margin-top:0.4rem;">{status}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("---")
+
+    # 등록 폼
+    st.markdown("### 신규 등록 / 갱신")
+
+    selected_member = st.selectbox("멤버 선택", members)
+    uploaded = st.file_uploader(
+        f"{selected_member}의 보컬 단독 음원 (WAV/MP3, 권장 30초~3분, MR 없는 보컬 스템)",
+        type=["wav", "mp3", "m4a", "ogg", "flac"],
+    )
+
+    if uploaded is not None and st.button(f"{selected_member} 레퍼런스 등록", use_container_width=True):
+        try:
+            with st.spinner(f"{selected_member} 임베딩 추출 중..."):
+                audio_bytes = uploaded.getvalue()
+                embedding = extract_embedding(audio_bytes)
+                library.set_reference(selected_member, embedding)
+                library.save(DEFAULT_LIBRARY_PATH)
+            st.success(f"✓ {selected_member} 레퍼런스 등록 완료. 임베딩 차원: {len(embedding)}")
+            st.rerun()
+        except Exception as e:
+            st.error(f"등록 실패: {e}")
+
+    st.markdown("---")
+
+    # 메인 앱으로 돌아가기
+    if st.button("← 메인 앱으로", use_container_width=True, type="secondary"):
+        st.query_params.clear()
+        st.session_state.stage = "home"
+        st.rerun()
+
+
+# ============================================================
 # 라우터
 # ============================================================
 
-if st.session_state.stage == "home":
+# 관리자 모드 — URL에 ?admin=1
+query_params = st.query_params
+if query_params.get("admin") == "1":
+    render_admin_references()
+elif st.session_state.stage == "home":
     render_home()
 elif st.session_state.stage == "analyzing":
     render_analyzing()

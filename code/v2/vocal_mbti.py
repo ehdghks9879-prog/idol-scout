@@ -100,30 +100,39 @@ def measure_brightness(measurements: Dict) -> float:
     """
     축 1: Tone Brightness 측정.
 
+    v2.1 개선:
+    - 한국 여자 보컬 spectral centroid 분포(1000~2800Hz)에 맞춤
+    - 흉성 비율에 더 큰 가중치 (벨팅 고주파 잡음 강건성)
+
     근거:
-    - Spectral centroid 높음 = 밝음
-    - Spectral rolloff 높음 = 밝음
+    - Spectral centroid 높음 = 밝음 (단, 잡음 영향 받음)
+    - 흉성 비율 높음 = 어두움 (가장 강력한 다크니스 지표)
     - F2/F1 비율 높음 = 밝음
-    - 흉성 비율 높음 = 어두움
     """
     factors = []
+    weights = []
 
-    # Spectral centroid (정규화: 1000Hz=0.5, 3000Hz=1.0)
-    centroid = measurements.get("spectral_centroid_hz", 1500)
-    factors.append(np.clip((centroid - 500) / 2500, 0, 1))
+    # 1. Spectral centroid (한국 여자 1000=어두움, 2800=밝음으로 재조정)
+    centroid = measurements.get("spectral_centroid_hz", 1800)
+    factors.append(np.clip((centroid - 1000) / 1800, 0, 1))
+    weights.append(1.0)
 
-    # 흉성 비율 (높을수록 어두움)
+    # 2. 흉성 비율 (높을수록 어두움) — 가중치 ↑
     chest_ratio = measurements.get("chest_voice_ratio", 0.5)
     factors.append(1.0 - chest_ratio)
+    weights.append(2.0)  # 흉성이 가장 강력한 다크니스 지표
 
-    # Formant F2/F1 ratio (높을수록 밝음, 일반 1.5~3.5)
+    # 3. Formant F2/F1 ratio (높을수록 밝음, 일반 1.5~3.5)
     f1 = measurements.get("formant_1_hz", 600)
     f2 = measurements.get("formant_2_hz", 1500)
     if f1 > 0:
         ratio = f2 / f1
         factors.append(np.clip((ratio - 1.5) / 2.0, 0, 1))
+        weights.append(0.8)
 
-    return float(np.mean(factors)) if factors else 0.5
+    if factors:
+        return float(np.average(factors, weights=weights))
+    return 0.5
 
 
 def measure_weight(measurements: Dict) -> float:
