@@ -2789,8 +2789,13 @@ def render_admin_references():
     cols = st.columns(4)
     for i, name in enumerate(members):
         with cols[i]:
-            status = "✓ 등록됨" if name in library.references else "○ 미등록"
-            color = "var(--accent)" if name in library.references else "var(--text-tertiary)"
+            count = library.get_sample_count(name)
+            if count > 0:
+                status = f"✓ {count}곡 누적"
+                color = "var(--accent)" if count >= 3 else "var(--accent-amber)"
+            else:
+                status = "○ 미등록"
+                color = "var(--text-tertiary)"
             st.markdown(
                 f'<div style="padding:1rem; background:rgba(255,255,255,0.04); '
                 f'border-radius:14px; text-align:center;">'
@@ -2800,14 +2805,22 @@ def render_admin_references():
                 unsafe_allow_html=True,
             )
 
+    st.caption("권장: 멤버당 **3곡 이상 누적** 등록 시 분별력 dramatically 향상")
+
     st.markdown("---")
 
     # 등록 폼
     st.markdown("### 신규 등록 / 갱신")
 
     selected_member = st.selectbox("멤버 선택", members)
+    mode = st.radio(
+        "등록 방식",
+        ["누적 (여러 곡 평균 — 권장)", "단일 (기존 덮어쓰기)"],
+        horizontal=True,
+        help="누적 모드는 같은 멤버의 여러 곡을 평균내어 임베딩 분별력을 높입니다."
+    )
     uploaded = st.file_uploader(
-        f"{selected_member}의 보컬 단독 음원 (WAV/MP3, 권장 30초~3분, MR 없는 보컬 스템)",
+        f"{selected_member}의 보컬 단독 음원 (WAV/MP3, 권장 30초~3분)",
         type=["wav", "mp3", "m4a", "ogg", "flac"],
     )
 
@@ -2816,9 +2829,18 @@ def render_admin_references():
             with st.spinner(f"{selected_member} 임베딩 추출 중..."):
                 audio_bytes = uploaded.getvalue()
                 embedding = extract_embedding(audio_bytes)
-                library.set_reference(selected_member, embedding)
-                library.save(DEFAULT_LIBRARY_PATH)
-            st.success(f"✓ {selected_member} 레퍼런스 등록 완료. 임베딩 차원: {len(embedding)}")
+                if mode.startswith("누적"):
+                    new_count = library.add_reference_sample(selected_member, embedding)
+                    library.save(DEFAULT_LIBRARY_PATH)
+                    st.success(
+                        f"✓ {selected_member} 레퍼런스 누적 완료. "
+                        f"현재 {new_count}곡 평균 임베딩."
+                    )
+                else:
+                    library.set_reference(selected_member, embedding)
+                    library._sample_counts[selected_member] = 1
+                    library.save(DEFAULT_LIBRARY_PATH)
+                    st.success(f"✓ {selected_member} 레퍼런스 단일 등록 완료.")
             st.rerun()
         except Exception as e:
             st.error(f"등록 실패: {e}")
@@ -2903,29 +2925,72 @@ def render_verification():
                 if not matches:
                     st.error("매칭 결과 없음")
                     return
+
+                # raw_cosine 기준 정렬 (이미 compute_matches에서 정렬됨)
                 top = matches[0]
                 correct = top["name"] == expected
+
+                # cosine 차이로 분별력 진단
+                top_cos = top["raw_cosine"]
+                second_cos = matches[1]["raw_cosine"] if len(matches) > 1 else 0
+                gap = top_cos - second_cos
+                if gap > 0.05:
+                    gap_status = f"✓ 명확한 분별 (gap {gap:.3f})"
+                elif gap > 0.02:
+                    gap_status = f"△ 미약한 분별 (gap {gap:.3f})"
+                else:
+                    gap_status = f"✗ 분별력 부족 (gap {gap:.3f}) — 레퍼런스 보강 필요"
+
                 if correct:
                     st.success(
-                        f"✓ 시스템 식별 성공!\n\n"
-                        f"식별: **{top['name']}** ({int(top['similarity'])}% 신뢰도)\n\n"
-                        f"정답: **{expected}** — 일치"
+                        f"✓ 시스템 식별 성공\n\n"
+                        f"**식별: {top['name']}** (raw cosine {top_cos:.3f}, {int(top['similarity'])}%)\n\n"
+                        f"**정답: {expected}** — 일치\n\n"
+                        f"{gap_status}"
                     )
                 else:
+                    # 정답이 후보 어디에 있는지 찾기
+                    expected_match = next((m for m in matches if m["name"] == expected), None)
+                    if expected_match:
+                        expected_rank = matches.index(expected_match) + 1
+                        expected_cos = expected_match["raw_cosine"]
+                        rank_info = (
+                            f"\n\n정답 '{expected}'의 실제 순위: "
+                            f"**{expected_rank}위 (cosine {expected_cos:.3f})**"
+                        )
+                    else:
+                        rank_info = ""
                     st.error(
                         f"✗ 시스템 식별 실패\n\n"
-                        f"시스템 식별: **{top['name']}** ({int(top['similarity'])}%)\n\n"
-                        f"정답: **{expected}**\n\n"
+                        f"**시스템 1순위: {top['name']}** (cosine {top_cos:.3f}, {int(top['similarity'])}%)\n\n"
+                        f"**정답: {expected}**{rank_info}\n\n"
+                        f"{gap_status}\n\n"
                         f"→ 측정 로직 또는 레퍼런스 품질 검토 필요"
                     )
-                # 모든 후보 표시
-                st.markdown("#### 전체 후보 순위")
-                for m in matches:
-                    icon = "✓" if m["name"] == expected else "  "
-                    st.markdown(
-                        f"{icon} **{m['name']}** ({m['code'] if 'code' in m else ''}) — "
-                        f"{int(m['similarity'])}% (raw cosine: {m['raw_cosine']:.3f})"
+
+                # 모든 후보 표시 (raw cosine 기준 정렬됨)
+                st.markdown("#### 전체 후보 순위 (cosine 내림차순)")
+                rank_html = '<table class="v2-table" style="margin-top:0.5rem;">'
+                rank_html += '<thead><tr><th>순위</th><th>가수</th><th>Raw Cosine</th><th>친화도 %</th><th>정답?</th></tr></thead><tbody>'
+                for i, m in enumerate(matches):
+                    is_correct = m["name"] == expected
+                    icon = "✓ 정답" if is_correct else ""
+                    color = "var(--accent)" if is_correct else "var(--text-primary)"
+                    rank_html += (
+                        f'<tr><td>{i+1}</td>'
+                        f'<td style="color:{color}; font-weight:600;">{m["name"]}</td>'
+                        f'<td style="font-family:Space Grotesk;">{m["raw_cosine"]:.4f}</td>'
+                        f'<td>{int(m["similarity"])}%</td>'
+                        f'<td style="color:var(--accent);">{icon}</td></tr>'
                     )
+                rank_html += "</tbody></table>"
+                st.markdown(rank_html, unsafe_allow_html=True)
+
+                st.caption(
+                    "ℹ Resemblyzer는 화자 인식(말하기) 모델이라 K-POP 여자 보컬 4인은 "
+                    "임베딩 공간에서 가까이 모입니다. cosine gap > 0.05면 분별 가능, "
+                    "그 미만이면 멀티-레퍼런스(여러 곡 평균)나 ECAPA-TDNN 등 가수 인식 모델로 업그레이드 필요."
+                )
             except Exception as e:
                 st.error(f"검증 실패: {e}")
 
