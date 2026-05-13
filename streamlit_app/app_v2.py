@@ -1902,20 +1902,31 @@ def _try_parselmouth_features(audio_bytes: bytes) -> dict:
         return {}
 
 
-def extract_audio_features(audio_bytes: bytes) -> dict:
-    """librosa + Parselmouth 통합 — 정밀 측정값 추출.
+def extract_audio_features_pro(audio_bytes: bytes) -> dict:
+    """v2.3 풍부 통합 분석 — 8+ AI 도구 호출.
 
-    v2.2 개선:
-    - Parselmouth(Praat)로 포먼트·HNR·Jitter·Shimmer 임상 정확 측정
-    - HPSS로 보컬 멜로디 분리
-    - 한국 여자 보컬 분포 맞춤 임계값
+    audio_extractor_pro 모듈로 위임. 실패 시 graceful fallback.
+    """
+    try:
+        from audio_extractor_pro import extract_all_pro, to_legacy_measurements
+        pro_feats = extract_all_pro(
+            audio_bytes,
+            use_demucs=False,  # 너무 느림 (CPU 30~60s) — 옵션화
+            use_heavy_models=True,  # HuBERT/ECAPA/Emotion 사용
+        )
+        legacy = to_legacy_measurements(pro_feats)
+        # 풍부 feature 포함
+        legacy["_pro_features"] = pro_feats
+        return legacy
+    except ImportError:
+        # 풍부 모듈 로드 실패 시 기본 librosa+Parselmouth만
+        return extract_audio_features_basic(audio_bytes)
 
-    추출 항목 (vocal_mbti.py 키 호환):
-        spectral_centroid_hz, chest_voice_ratio, formant_1_hz, formant_2_hz,
-        nasal_resonance_ratio, breathiness, hnr_db, dynamic_range_db,
-        attack_sharpness, loudness_smoothness, climax_building, energy_change_rate
-    + 추가 (Parselmouth):
-        formant_3_hz, jitter_local, shimmer_local
+
+def extract_audio_features_basic(audio_bytes: bytes) -> dict:
+    """librosa + Parselmouth 통합 — 정밀 측정값 추출 (basic).
+
+    v2.2 기준 — pro 모듈 실패 시 fallback.
     """
     import librosa
     import numpy as np
@@ -2173,7 +2184,7 @@ def run_analysis(audio_data, audio_url, artist_name):
             return {"error": "오디오 파일을 읽지 못했습니다.", "artist": artist_name}
 
         # 실제 특징 추출 (librosa + Parselmouth)
-        measurements = extract_audio_features(audio_bytes)
+        measurements = extract_audio_features_pro(audio_bytes)
 
         # Outlier 판정
         outlier_high, outlier_low = detect_outliers(measurements)
@@ -2235,6 +2246,9 @@ def run_analysis(audio_data, audio_url, artist_name):
             ),
             "embedding_used": embedding_used,
             "uniqueness": getattr(result, 'uniqueness', None),  # 회사 헌법 핵심 지표 (구버전 호환)
+            "pro_features": measurements.get("_pro_features", {}),  # v2.3 풍부 분석 결과
+            "tools_succeeded": measurements.get("_pro_features", {}).get("_meta_tools_succeeded", []),
+            "tools_failed": measurements.get("_pro_features", {}).get("_meta_tools_failed", []),
             "outlier_high": result.outlier_high_dimensions,
             "outlier_low": result.outlier_low_dimensions,
             "frame_1": result.frame_1_attention,
@@ -2689,6 +2703,78 @@ def render_deep():
                 st.caption(f"(outlier 차트 생성 실패: {_viz_e})")
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── v2.3 풍부 분석 결과 (AI 도구 통합 현황) ──
+    tools_succeeded = result.get('tools_succeeded', [])
+    tools_failed = result.get('tools_failed', [])
+    pro_features = result.get('pro_features', {})
+    if tools_succeeded or pro_features:
+        st.markdown('<div class="v2-deep-section">', unsafe_allow_html=True)
+        st.markdown('<div class="v2-deep-label">AI INTEGRATION · v2.3 PRO ANALYSIS</div>', unsafe_allow_html=True)
+        st.markdown('<div class="v2-deep-title">통합된 AI 분석 도구</div>', unsafe_allow_html=True)
+
+        feat_count = pro_features.get("_meta_feature_count", 0)
+        st.markdown(
+            f'<div style="color:var(--text-secondary); margin-bottom:1rem;">'
+            f'총 <b style="color:var(--accent);">{feat_count}개 특징</b> 추출 — '
+            f'성공 {len(tools_succeeded)}/실패 {len(tools_failed)} 도구</div>',
+            unsafe_allow_html=True
+        )
+
+        # 성공/실패 도구 알약
+        tools_html = '<div style="margin-bottom:1rem;">'
+        for tool in tools_succeeded:
+            tools_html += f'<span class="v2-outlier-pill">{tool}</span>'
+        for tool in tools_failed:
+            tools_html += f'<span class="v2-outlier-pill v2-outlier-pill-low">{tool}</span>'
+        tools_html += '</div>'
+        st.markdown(tools_html, unsafe_allow_html=True)
+
+        # 핵심 측정값 표 (도구별 그룹)
+        groupings = {
+            "Parselmouth (정밀 음성)": ["praat_formant_1_mean_hz", "praat_formant_2_mean_hz",
+                                       "praat_hnr_db", "praat_jitter_local", "praat_shimmer_local",
+                                       "praat_f0_mean_hz", "praat_f0_range_semitones"],
+            "CREPE (정밀 F0)": ["crepe_f0_mean_hz", "crepe_f0_range_st",
+                                "crepe_voiced_ratio", "crepe_vibrato_extent_hz"],
+            "openSMILE (eGeMAPS)": ["smile_F0semitoneFrom27.5Hz_sma3nz_amean",
+                                    "smile_loudness_sma3_amean",
+                                    "smile_jitterLocal_sma3nz_amean",
+                                    "smile_HNRdBACF_sma3nz_amean"],
+            "Essentia (음악)": ["essentia_lowlevel_dynamic_complexity",
+                               "essentia_rhythm_bpm",
+                               "essentia_tonal_key_strength"],
+            "SpeechBrain (감정)": ["sb_emotion_label", "sb_emotion_score",
+                                   "sb_emotion_happy_prob", "sb_emotion_sad_prob",
+                                   "sb_emotion_neutral_prob", "sb_emotion_angry_prob"],
+            "임베딩 (벡터 차원)": ["resemblyzer_embedding_norm", "hubert_embedding_norm",
+                                   "ecapa_embedding_norm", "silero_speech_ratio"],
+        }
+
+        for group_name, keys in groupings.items():
+            rows_html = ""
+            for k in keys:
+                if k in pro_features:
+                    v = pro_features[k]
+                    if isinstance(v, float):
+                        v_str = f"{v:.3f}"
+                    else:
+                        v_str = str(v)
+                    rows_html += f'<tr><td>{k.replace("_", " ")}</td><td style="color:var(--accent); font-family:Space Grotesk;">{v_str}</td></tr>'
+            if rows_html:
+                st.markdown(
+                    f'<div style="margin-top:1.2rem; color:var(--text-tertiary); '
+                    f'font-size:0.8rem; letter-spacing:0.08em; text-transform:uppercase;">'
+                    f'{group_name}</div>'
+                    f'<table class="v2-table">{rows_html}</table>',
+                    unsafe_allow_html=True
+                )
+
+        st.caption(
+            "ℹ v2.3 PoC 단계 — 가능한 모든 AI 오픈소스를 통합 후, "
+            "운영 단계에서 효과적인 도구만 유지 예정."
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # ── 신뢰도 검증 ──
     st.markdown('<div class="v2-deep-section">', unsafe_allow_html=True)

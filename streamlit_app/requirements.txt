@@ -1,17 +1,59 @@
-# Streamlit Cloud v2.2 — 실측 + Parselmouth + Resemblyzer
+# Streamlit Cloud v2.3 — 풍부 통합 분석 (PoC 단계)
+# 8+ AI 오픈소스 도구 통합
+# 라이선스 안전성: Apache 2.0, MIT, BSD, ISC, GPL(호출 한정 안전)
+# 운영 단계 진입 시 효과 평가 후 일부 제거 예정
+
+# ─ 핵심 ─
 streamlit>=1.30.0
 plotly>=5.18.0
 numpy>=1.24.0
 scipy>=1.10.0
 
-# 오디오 처리
+# ─ 오디오 기본 ─
 librosa>=0.10.0
 soundfile>=0.12.0
 audioread>=3.0.0
 
-# 정밀 음성 분석 (Praat)
+# ─ Parselmouth (Praat) ─
 praat-parselmouth>=0.4.3
 
-# 보컬 임베딩 (화자 식별)
+# ─ Resemblyzer (256-dim 화자 임베딩) ─
 resemblyzer>=0.1.4
+
+# ─ CREPE (정밀 F0) ─
+crepe>=0.0.16
+tensorflow>=2.12.0  # CREPE 의존성
+
+# ─ openSMILE (eGeMAPS 88 특징) ─
+opensmile>=2.5.0
+
+# ─ Essentia (음향·리듬·톤 풍부 분석) ─
+# 주의: AGPL — 운영 배포 시 라이선스 검토
+essentia>=2.1b6.dev1110
+
+# ─ Demucs v4 (보컬 분리) ─
+demucs>=4.0.0
+
+# ─ Silero-VAD (음성 활성 감지) ─
+# torch.hub로 자동 로드 (torch 필요)
+
+# ─ HuBERT, Wav2Vec, WavLM (transformers) ─
+transformers>=4.30.0
 torch>=2.0.0
+torchaudio>=2.0.0
+
+# ─ SpeechBrain (감정 인식 + ECAPA 화자) ─
+speechbrain>=0.5.16
+
+# ─ BasicPitch (Spotify 다중 음정) ─
+basic-pitch>=0.4.0
+
+# ─ 벡터 검색 (대규모 라이브러리 확장 시) ─
+faiss-cpu>=1.7.4
+annoy>=1.17.3
+
+# ─ MIR ─
+mir-eval>=0.7.0
+
+# ─ 기타 ─
+scikit-learn>=1.3.0
